@@ -3,47 +3,316 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/call_state.dart';
 import 'package:intercom_app/providers/call_provider.dart';
 
-class CallScreen extends ConsumerWidget {
+const _cyan = Color(0xFF00E5FF);
+const _bg = Color(0xFF0A1628);
+const _card = Color(0xFF0D1F38);
+const _border = Color(0xFF1A3A5C);
+const _muted = Color(0xFF445566);
+
+class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<CallScreen> createState() => _CallScreenState();
+}
+
+class _CallScreenState extends ConsumerState<CallScreen> {
+  bool _isMuted = false;
+  bool _isPushToTalk = false;
+  bool _isSpeaker = false;
+  bool _isBluetooth = false;
+  Duration _elapsed = Duration.zero;
+  late final Stream<Duration> _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Stream.periodic(
+      const Duration(seconds: 1),
+      (i) => Duration(seconds: i + 1),
+    );
+  }
+
+  String _formatTime(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '${d.inHours > 0 ? '${d.inHours.toString().padLeft(2, '0')}:' : ''}$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final call = ref.watch(callProvider);
 
     ref.listen(callProvider, (prev, next) {
-      if (next.status == CallStatus.idle && prev?.status != CallStatus.idle) {
-        Navigator.of(context).popUntil((route) => route.isFirst);
+      if (next.status == CallStatus.idle) {
+        Navigator.of(context).popUntil((r) => r.isFirst);
       }
     });
 
+    final initials =
+        call.remoteDevice?.name != null && call.remoteDevice!.name.length >= 2
+        ? call.remoteDevice!.name.substring(0, 2).toUpperCase()
+        : 'AN';
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Llamada')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+      backgroundColor: _bg,
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: Row(
           children: [
-            const Icon(Icons.mic, size: 80, color: Colors.indigo),
-            const SizedBox(height: 16),
-            Text(
-              call.status == CallStatus.connecting
-                  ? 'Conectando...'
-                  : 'En llamada con ${call.remoteDevice?.name ?? ''}',
-              style: const TextStyle(fontSize: 20),
-            ),
-            const SizedBox(height: 48),
-            FloatingActionButton.extended(
-              backgroundColor: Colors.red,
-              onPressed: () {
-                ref.read(callProvider.notifier).endCall();
-              },
-              icon: const Icon(Icons.call_end, color: Colors.white),
-              label: const Text(
-                'Colgar',
-                style: TextStyle(color: Colors.white),
+            const Text('En llamada'),
+            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFF00CC44).withOpacity(0.15),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: const Color(0xFF00CC44).withOpacity(0.4),
+                ),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.circle, size: 6, color: Color(0xFF00CC44)),
+                  SizedBox(width: 4),
+                  Text(
+                    'Activa',
+                    style: TextStyle(color: Color(0xFF00CC44), fontSize: 11),
+                  ),
+                ],
               ),
             ),
           ],
         ),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 0.5, color: _border),
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const Spacer(),
+            // Avatar
+            Container(
+              width: 88,
+              height: 88,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _card,
+                border: Border.all(color: _cyan, width: 2),
+              ),
+              child: Center(
+                child: Text(
+                  initials,
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              call.remoteDevice?.name ?? 'Dispositivo',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 6),
+            StreamBuilder<Duration>(
+              stream: _timer,
+              builder: (context, snap) {
+                final d = snap.data ?? Duration.zero;
+                return Text(
+                  _formatTime(d),
+                  style: const TextStyle(color: _muted, fontSize: 14),
+                );
+              },
+            ),
+            const Spacer(),
+            // Switch PTT
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'Manos libres',
+                  style: TextStyle(
+                    color: _isPushToTalk ? _muted : _cyan,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                GestureDetector(
+                  onTap: () => setState(() => _isPushToTalk = !_isPushToTalk),
+                  child: Container(
+                    width: 44,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      color: _isPushToTalk ? _cyan : _border,
+                    ),
+                    child: AnimatedAlign(
+                      duration: const Duration(milliseconds: 200),
+                      alignment: _isPushToTalk
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        margin: const EdgeInsets.symmetric(horizontal: 2),
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Push-to-talk',
+                  style: TextStyle(
+                    color: _isPushToTalk ? _cyan : _muted,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
+            // PTT button
+            GestureDetector(
+              onTapDown: _isPushToTalk ? (_) {} : null,
+              onTapUp: _isPushToTalk ? (_) {} : null,
+              child: Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _isPushToTalk ? _cyan : _cyan.withOpacity(0.15),
+                  border: Border.all(color: _cyan, width: 2),
+                ),
+                child: Icon(
+                  Icons.mic,
+                  color: _isPushToTalk ? _bg : _cyan,
+                  size: 36,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _isPushToTalk ? 'Mantén para hablar' : 'Micrófono activo',
+              style: const TextStyle(color: _muted, fontSize: 11),
+            ),
+            const Spacer(),
+            // Acciones
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _ActionBtn(
+                  icon: _isMuted ? Icons.mic_off : Icons.mic_none,
+                  label: _isMuted ? 'Silenciado' : 'Silenciar',
+                  active: _isMuted,
+                  onTap: () => setState(() => _isMuted = !_isMuted),
+                ),
+                _HangupBtn(
+                  onTap: () => ref.read(callProvider.notifier).endCall(),
+                ),
+                _ActionBtn(
+                  icon: Icons.bluetooth,
+                  label: 'Bluetooth',
+                  active: _isBluetooth,
+                  activeColor: _cyan,
+                  onTap: () => setState(() => _isBluetooth = !_isBluetooth),
+                ),
+                _ActionBtn(
+                  icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
+                  label: 'Altavoz',
+                  active: _isSpeaker,
+                  onTap: () => setState(() => _isSpeaker = !_isSpeaker),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final Color? activeColor;
+  final VoidCallback onTap;
+
+  const _ActionBtn({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.active = false,
+    this.activeColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = active ? (activeColor ?? Colors.white) : _muted;
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: active
+                  ? (activeColor ?? Colors.white).withOpacity(0.15)
+                  : _card,
+              border: Border.all(
+                color: active
+                    ? (activeColor ?? Colors.white).withOpacity(0.4)
+                    : _border,
+              ),
+            ),
+            child: Icon(icon, color: color, size: 22),
+          ),
+          const SizedBox(height: 6),
+          Text(label, style: TextStyle(color: color, fontSize: 10)),
+        ],
+      ),
+    );
+  }
+}
+
+class _HangupBtn extends StatelessWidget {
+  final VoidCallback onTap;
+  const _HangupBtn({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Color(0xFFCC2222),
+            ),
+            child: const Icon(Icons.call_end, color: Colors.white, size: 22),
+          ),
+          const SizedBox(height: 6),
+          const Text('Colgar', style: TextStyle(color: _muted, fontSize: 10)),
+        ],
       ),
     );
   }
