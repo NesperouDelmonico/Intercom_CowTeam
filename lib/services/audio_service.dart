@@ -1,10 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
-import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 
 class AudioService {
+  static const _channel = MethodChannel('com.example.intercom_app/audio');
   final AudioRecorder _recorder = AudioRecorder();
   RawDatagramSocket? _sendSocket;
   RawDatagramSocket? _receiveSocket;
@@ -20,28 +21,25 @@ class AudioService {
     if (_isRunning) return;
     _isRunning = true;
 
-    // Inicializar reproducción PCM
-    await FlutterPcmSound.setup(sampleRate: 16000, channelCount: 1);
-    FlutterPcmSound.start();
+    // Iniciar AudioTrack nativo
+    await _channel.invokeMethod('startPlayback');
 
-    // Socket para enviar audio al otro teléfono
+    // Socket para enviar
     _sendSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
 
-    // Socket para recibir audio del otro teléfono
+    // Socket para recibir
     _receiveSocket = await RawDatagramSocket.bind(
       InternetAddress.anyIPv4,
       remotePort,
       reuseAddress: true,
     );
 
-    // Reproducir audio que llega
+    // Reproducir audio entrante via AudioTrack nativo
     _receiveSocket!.listen((event) {
       if (event == RawSocketEvent.read) {
         final datagram = _receiveSocket!.receive();
         if (datagram != null && _isRunning) {
-          FlutterPcmSound.feed(
-            PcmArrayInt16.fromList(_bytesToInt16(datagram.data)),
-          );
+          _channel.invokeMethod('playChunk', {'data': datagram.data});
         }
       }
     });
@@ -71,20 +69,11 @@ class AudioService {
     });
   }
 
-  List<int> _bytesToInt16(Uint8List bytes) {
-    final result = <int>[];
-    for (int i = 0; i < bytes.length - 1; i += 2) {
-      final value = bytes[i] | (bytes[i + 1] << 8);
-      result.add(value > 32767 ? value - 65536 : value);
-    }
-    return result;
-  }
-
   Future<void> stopCall() async {
     _isRunning = false;
     _audioSubscription?.cancel();
     await _recorder.stop();
-    await FlutterPcmSound.stop();
+    await _channel.invokeMethod('stopPlayback');
     _sendSocket?.close();
     _receiveSocket?.close();
     _sendSocket = null;

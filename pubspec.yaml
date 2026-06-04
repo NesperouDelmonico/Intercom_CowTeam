@@ -42,8 +42,6 @@ dependencies:
   flutter_blue_plus: ^2.3.5
   just_audio: ^0.10.5
   record: ^7.0.0
-  flutter_pcm_sound: ^3.3.3
-
 dev_dependencies:
   flutter_test:
     sdk: flutter

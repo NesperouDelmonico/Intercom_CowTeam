@@ -30,13 +30,22 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
     setState(() => _myIp = ip ?? 'desconocida');
   }
 
-  Future<void> _startScan() async {
-    // Pedir permisos necesarios
-    final locationStatus = await Permission.locationWhenInUse.request();
-    final nearbyStatus = await Permission.nearbyWifiDevices.request();
+  Future<bool> _requestPermissions() async {
+    // Solo pedir ubicación — funciona en todas las versiones de Android
+    final location = await Permission.locationWhenInUse.request();
+    if (location.isDenied || location.isPermanentlyDenied) {
+      return false;
+    }
+    return true;
+  }
 
-    if (locationStatus.isDenied || nearbyStatus.isDenied) {
-      setState(() => _status = 'Permisos necesarios para buscar dispositivos');
+  Future<void> _startScan() async {
+    final granted = await _requestPermissions();
+
+    if (!granted) {
+      setState(
+        () => _status = 'Permisos necesarios. Ve a Ajustes y actívalos.',
+      );
       return;
     }
 
