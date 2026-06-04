@@ -1,6 +1,6 @@
 import 'package:intercom_app/models/device.dart';
 
-enum CallStatus { idle, connecting, active, ended }
+enum CallStatus { idle, connecting, incoming, active, ended }
 
 class CallState {
   final CallStatus status;

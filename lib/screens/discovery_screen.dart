@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intercom_app/models/device.dart';
 import 'package:intercom_app/services/discovery_service.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class DiscoveryScreen extends StatefulWidget {
   const DiscoveryScreen({super.key});
@@ -15,6 +16,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   final List<Device> _devices = [];
   String _myIp = '';
   bool _scanning = false;
+  String _status = '';
 
   @override
   void initState() {
@@ -29,21 +31,35 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
   }
 
   Future<void> _startScan() async {
+    // Pedir permisos necesarios
+    final locationStatus = await Permission.locationWhenInUse.request();
+    final nearbyStatus = await Permission.nearbyWifiDevices.request();
+
+    if (locationStatus.isDenied || nearbyStatus.isDenied) {
+      setState(() => _status = 'Permisos necesarios para buscar dispositivos');
+      return;
+    }
+
     setState(() {
       _scanning = true;
       _devices.clear();
+      _status = 'Buscando...';
     });
 
     _discovery.onDeviceFound = (device) {
       setState(() => _devices.add(device));
     };
 
-    await _discovery.start('Mi teléfono');
+    final deviceName = 'Android-${_myIp.split('.').last}';
+    await _discovery.start(deviceName);
   }
 
   void _stopScan() {
     _discovery.stop();
-    setState(() => _scanning = false);
+    setState(() {
+      _scanning = false;
+      _status = '';
+    });
   }
 
   @override
@@ -67,7 +83,10 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
               icon: Icon(_scanning ? Icons.stop : Icons.search),
               label: Text(_scanning ? 'Detener' : 'Buscar dispositivos'),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 8),
+            if (_status.isNotEmpty)
+              Text(_status, style: const TextStyle(color: Colors.grey)),
+            const SizedBox(height: 16),
             if (_scanning && _devices.isEmpty)
               const CircularProgressIndicator(),
             Expanded(
