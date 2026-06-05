@@ -3,9 +3,10 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
+import 'package:intercom_app/services/audio_service.dart';
 
 class AudioService {
-  static const _channel = MethodChannel('com.example.intercom_app/audio');
+  static const channel = MethodChannel('com.example.intercom_app/audio');
   final AudioRecorder _recorder = AudioRecorder();
   RawDatagramSocket? _sendSocket;
   RawDatagramSocket? _receiveSocket;
@@ -22,7 +23,7 @@ class AudioService {
     _isRunning = true;
 
     // Iniciar AudioTrack nativo
-    await _channel.invokeMethod('startPlayback');
+    await channel.invokeMethod('startPlayback');
 
     // Socket para enviar
     _sendSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
@@ -39,7 +40,7 @@ class AudioService {
       if (event == RawSocketEvent.read) {
         final datagram = _receiveSocket!.receive();
         if (datagram != null && _isRunning) {
-          _channel.invokeMethod('playChunk', {'data': datagram.data});
+          channel.invokeMethod('playChunk', {'data': datagram.data});
         }
       }
     });
@@ -57,7 +58,7 @@ class AudioService {
     );
 
     _audioSubscription = stream.listen((chunk) {
-      if (_sendSocket != null && _isRunning) {
+      if (_sendSocket != null && _isRunning && !_isMuted) {
         try {
           _sendSocket!.send(
             Uint8List.fromList(chunk),
@@ -73,10 +74,16 @@ class AudioService {
     _isRunning = false;
     _audioSubscription?.cancel();
     await _recorder.stop();
-    await _channel.invokeMethod('stopPlayback');
+    await channel.invokeMethod('stopPlayback');
     _sendSocket?.close();
     _receiveSocket?.close();
     _sendSocket = null;
     _receiveSocket = null;
   }
+
+  void setMuted(bool muted) {
+    _isMuted = muted;
+  }
+
+  bool _isMuted = false;
 }

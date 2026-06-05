@@ -14,6 +14,10 @@ class CallNotifier extends Notifier<CallState> {
     return const CallState();
   }
 
+  void setMuted(bool muted) {
+    _audio.setMuted(muted);
+  }
+
   Future<void> _initNetwork() async {
     await _network.start();
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/call_state.dart';
 import 'package:intercom_app/providers/call_provider.dart';
@@ -8,6 +9,7 @@ const _bg = Color(0xFF0A1628);
 const _card = Color(0xFF0D1F38);
 const _border = Color(0xFF1A3A5C);
 const _muted = Color(0xFF445566);
+const _ch = MethodChannel('com.example.intercom_app/audio');
 
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key});
@@ -21,22 +23,60 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   bool _isPushToTalk = false;
   bool _isSpeaker = false;
   bool _isBluetooth = false;
-  Duration _elapsed = Duration.zero;
-  late final Stream<Duration> _timer;
 
   @override
   void initState() {
     super.initState();
-    _timer = Stream.periodic(
-      const Duration(seconds: 1),
-      (i) => Duration(seconds: i + 1),
-    );
+    _initAudioOutput();
+  }
+
+  Future<void> _initAudioOutput() async {
+    final bool hasBt = await _ch.invokeMethod('isBluetoothConnected') ?? false;
+    setState(() {
+      _isBluetooth = hasBt;
+      _isSpeaker = !hasBt;
+    });
   }
 
   String _formatTime(Duration d) {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '${d.inHours > 0 ? '${d.inHours.toString().padLeft(2, '0')}:' : ''}$m:$s';
+  }
+
+  Future<void> _toggleMute() async {
+    final newMuted = !_isMuted;
+    ref.read(callProvider.notifier).setMuted(newMuted);
+    setState(() => _isMuted = newMuted);
+  }
+
+  Future<void> _activateBluetooth() async {
+    await _ch.invokeMethod('enableBluetooth');
+    setState(() {
+      _isBluetooth = true;
+      _isSpeaker = false;
+    });
+  }
+
+  Future<void> _deactivateBluetooth() async {
+    await _ch.invokeMethod('disableBluetooth');
+    setState(() {
+      _isBluetooth = false;
+      _isSpeaker = true;
+    });
+  }
+
+  Future<void> _activateSpeaker() async {
+    await _ch.invokeMethod('enableSpeaker');
+    setState(() {
+      _isSpeaker = true;
+      _isBluetooth = false;
+    });
+  }
+
+  Future<void> _deactivateSpeaker() async {
+    await _ch.invokeMethod('disableSpeaker');
+    setState(() => _isSpeaker = false);
   }
 
   @override
@@ -125,11 +165,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
             ),
             const SizedBox(height: 6),
             StreamBuilder<Duration>(
-              stream: _timer,
+              stream: Stream.periodic(
+                const Duration(seconds: 1),
+                (i) => Duration(seconds: i + 1),
+              ),
               builder: (context, snap) {
-                final d = snap.data ?? Duration.zero;
                 return Text(
-                  _formatTime(d),
+                  _formatTime(snap.data ?? Duration.zero),
                   style: const TextStyle(color: _muted, fontSize: 14),
                 );
               },
@@ -184,7 +226,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
               ],
             ),
             const SizedBox(height: 28),
-            // PTT button
+            // Botón PTT / micrófono
             GestureDetector(
               onTapDown: _isPushToTalk ? (_) {} : null,
               onTapUp: _isPushToTalk ? (_) {} : null,
@@ -193,23 +235,30 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 height: 88,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _isPushToTalk ? _cyan : _cyan.withOpacity(0.15),
-                  border: Border.all(color: _cyan, width: 2),
+                  color: _isMuted
+                      ? _border
+                      : (_isPushToTalk ? _cyan : _cyan.withOpacity(0.15)),
+                  border: Border.all(
+                    color: _isMuted ? _muted : _cyan,
+                    width: 2,
+                  ),
                 ),
                 child: Icon(
-                  Icons.mic,
-                  color: _isPushToTalk ? _bg : _cyan,
+                  _isMuted ? Icons.mic_off : Icons.mic,
+                  color: _isMuted ? _muted : (_isPushToTalk ? _bg : _cyan),
                   size: 36,
                 ),
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              _isPushToTalk ? 'Mantén para hablar' : 'Micrófono activo',
-              style: const TextStyle(color: _muted, fontSize: 11),
+              _isMuted
+                  ? 'Micrófono silenciado'
+                  : (_isPushToTalk ? 'Mantén para hablar' : 'Micrófono activo'),
+              style: TextStyle(color: _isMuted ? _muted : _muted, fontSize: 11),
             ),
             const Spacer(),
-            // Acciones
+            // Botones de acción
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
@@ -217,7 +266,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   icon: _isMuted ? Icons.mic_off : Icons.mic_none,
                   label: _isMuted ? 'Silenciado' : 'Silenciar',
                   active: _isMuted,
-                  onTap: () => setState(() => _isMuted = !_isMuted),
+                  onTap: _toggleMute,
                 ),
                 _HangupBtn(
                   onTap: () => ref.read(callProvider.notifier).endCall(),
@@ -227,13 +276,16 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   label: 'Bluetooth',
                   active: _isBluetooth,
                   activeColor: _cyan,
-                  onTap: () => setState(() => _isBluetooth = !_isBluetooth),
+                  onTap: _isBluetooth
+                      ? _deactivateBluetooth
+                      : _activateBluetooth,
                 ),
                 _ActionBtn(
                   icon: _isSpeaker ? Icons.volume_up : Icons.volume_down,
                   label: 'Altavoz',
                   active: _isSpeaker,
-                  onTap: () => setState(() => _isSpeaker = !_isSpeaker),
+                  activeColor: _cyan,
+                  onTap: _isSpeaker ? _deactivateSpeaker : _activateSpeaker,
                 ),
               ],
             ),
