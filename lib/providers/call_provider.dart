@@ -8,6 +8,8 @@ class CallNotifier extends Notifier<CallState> {
   final AudioService _audio = AudioService();
   final NetworkService _network = NetworkService();
 
+  AudioService get audioService => _audio;
+
   @override
   CallState build() {
     _initNetwork();

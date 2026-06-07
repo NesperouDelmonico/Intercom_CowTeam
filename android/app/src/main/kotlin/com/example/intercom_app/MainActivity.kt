@@ -7,10 +7,16 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
 import android.media.AudioTrack
+import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import kotlin.math.sqrt
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.intercom_app/audio"
@@ -18,6 +24,11 @@ class MainActivity : FlutterActivity() {
     private var audioManager: AudioManager? = null
     private var bluetoothHeadset: BluetoothHeadset? = null
     private var isBtActive = false
+
+    // VOX
+    private var voxEnabled = false
+    private var voxThreshold = 500.0
+    private var callVolume = 1.0f
 
     private val headsetListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
@@ -39,36 +50,25 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startPlayback" -> {
-                        startAudioCall()
-                        result.success(null)
-                    }
+                    "startPlayback" -> { startAudioCall(); result.success(null) }
                     "playChunk" -> {
                         val bytes = call.argument<ByteArray>("data")
                         if (bytes != null) playChunk(bytes)
                         result.success(null)
                     }
-                    "stopPlayback" -> {
-                        stopAudioCall()
+                    "stopPlayback" -> { stopAudioCall(); result.success(null) }
+                    "enableBluetooth" -> { enableBluetooth(); result.success(null) }
+                    "disableBluetooth" -> { disableBluetooth(); result.success(null) }
+                    "enableSpeaker" -> { enableSpeaker(); result.success(null) }
+                    "disableSpeaker" -> { disableSpeaker(); result.success(null) }
+                    "isBluetoothConnected" -> result.success(isBluetoothHeadsetConnected())
+                    "setVox" -> {
+                        voxEnabled = call.argument<Boolean>("enabled") ?: false
+                        voxThreshold = (call.argument<Double>("threshold") ?: 500.0)
                         result.success(null)
                     }
-                    "enableBluetooth" -> {
-                        enableBluetooth()
-                        result.success(null)
-                    }
-                    "disableBluetooth" -> {
-                        disableBluetooth()
-                        result.success(null)
-                    }
-                    "isBluetoothConnected" -> {
-                        result.success(isBluetoothHeadsetConnected())
-                    }
-                    "enableSpeaker" -> {
-                        enableSpeaker()
-                        result.success(null)
-                    }
-                    "disableSpeaker" -> {
-                        disableSpeaker()
+                    "setVolume" -> {
+                        callVolume = (call.argument<Double>("volume") ?: 1.0).toFloat()
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -100,6 +100,7 @@ class MainActivity : FlutterActivity() {
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
+
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -120,6 +121,17 @@ class MainActivity : FlutterActivity() {
         audioTrack?.play()
     }
 
+    fun shouldTransmit(data: ByteArray): Boolean {
+        if (!voxEnabled) return true
+        var sum = 0.0
+        for (i in 0 until data.size - 1 step 2) {
+            val sample = (data[i].toInt() or (data[i + 1].toInt() shl 8)).toShort()
+            sum += sample * sample
+        }
+        val rms = sqrt(sum / (data.size / 2))
+        return rms > voxThreshold
+    }
+
     private fun enableBluetooth() {
         if (isBluetoothHeadsetConnected()) {
             audioManager?.isSpeakerphoneOn = false
@@ -136,25 +148,7 @@ class MainActivity : FlutterActivity() {
         isBtActive = false
     }
 
-    private fun playChunk(data: ByteArray) {
-        audioTrack?.write(data, 0, data.size)
-    }
-
-    private fun stopAudioCall() {
-        if (isBtActive) {
-            audioManager?.isBluetoothScoOn = false
-            audioManager?.stopBluetoothSco()
-            isBtActive = false
-        }
-
-        audioManager?.isSpeakerphoneOn = false
-        audioManager?.mode = AudioManager.MODE_NORMAL
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
-    }
-
-        private fun enableSpeaker() {
+    private fun enableSpeaker() {
         if (isBtActive) {
             audioManager?.isBluetoothScoOn = false
             audioManager?.stopBluetoothSco()
@@ -165,5 +159,36 @@ class MainActivity : FlutterActivity() {
 
     private fun disableSpeaker() {
         audioManager?.isSpeakerphoneOn = false
+    }
+
+    private fun playChunk(data: ByteArray) {
+        if (callVolume != 1.0f) {
+            val shorts = ShortArray(data.size / 2)
+            for (i in shorts.indices) {
+                val s = (data[i * 2].toInt() or (data[i * 2 + 1].toInt() shl 8)).toShort()
+                shorts[i] = (s * callVolume).toInt().coerceIn(-32768, 32767).toShort()
+            }
+            val scaled = ByteArray(data.size)
+            for (i in shorts.indices) {
+                scaled[i * 2] = (shorts[i].toInt() and 0xFF).toByte()
+                scaled[i * 2 + 1] = (shorts[i].toInt() shr 8).toByte()
+            }
+            audioTrack?.write(scaled, 0, scaled.size)
+        } else {
+            audioTrack?.write(data, 0, data.size)
+        }
+    }
+
+    private fun stopAudioCall() {
+        if (isBtActive) {
+            audioManager?.isBluetoothScoOn = false
+            audioManager?.stopBluetoothSco()
+            isBtActive = false
+        }
+        audioManager?.isSpeakerphoneOn = false
+        audioManager?.mode = AudioManager.MODE_NORMAL
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
     }
 }

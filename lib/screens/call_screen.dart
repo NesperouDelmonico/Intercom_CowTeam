@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/call_state.dart';
 import 'package:intercom_app/providers/call_provider.dart';
+import 'package:intercom_app/services/audio_service.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -289,6 +290,10 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 ),
               ],
             ),
+
+            _VoxPanel(
+              audioService: ref.read(callProvider.notifier).audioService,
+            ),
             const SizedBox(height: 16),
           ],
         ),
@@ -364,6 +369,145 @@ class _HangupBtn extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           const Text('Colgar', style: TextStyle(color: _muted, fontSize: 10)),
+        ],
+      ),
+    );
+  }
+}
+
+class _VoxPanel extends StatefulWidget {
+  final AudioService audioService;
+  const _VoxPanel({required this.audioService});
+
+  @override
+  State<_VoxPanel> createState() => _VoxPanelState();
+}
+
+class _VoxPanelState extends State<_VoxPanel> {
+  bool _voxEnabled = false;
+  double _voxThreshold = 500;
+  double _volume = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.graphic_eq, color: _cyan, size: 16),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'VOX',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: () async {
+                  final newVal = !_voxEnabled;
+                  await widget.audioService.setVox(
+                    enabled: newVal,
+                    threshold: _voxThreshold,
+                  );
+                  setState(() => _voxEnabled = newVal);
+                },
+                child: Container(
+                  width: 44,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: _voxEnabled ? _cyan : _border,
+                  ),
+                  child: AnimatedAlign(
+                    duration: const Duration(milliseconds: 200),
+                    alignment: _voxEnabled
+                        ? Alignment.centerRight
+                        : Alignment.centerLeft,
+                    child: Container(
+                      width: 20,
+                      height: 20,
+                      margin: const EdgeInsets.symmetric(horizontal: 2),
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_voxEnabled) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Text(
+                  'Sensibilidad',
+                  style: TextStyle(color: _muted, fontSize: 11),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: _voxThreshold,
+                    min: 100,
+                    max: 2000,
+                    activeColor: _cyan,
+                    inactiveColor: _border,
+                    onChanged: (v) async {
+                      await widget.audioService.setVox(
+                        enabled: _voxEnabled,
+                        threshold: v,
+                      );
+                      setState(() => _voxThreshold = v);
+                    },
+                  ),
+                ),
+                Text(
+                  _voxThreshold.toInt().toString(),
+                  style: const TextStyle(color: _muted, fontSize: 11),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Icon(Icons.volume_up, color: _cyan, size: 16),
+              const SizedBox(width: 8),
+              const Text(
+                'Volumen',
+                style: TextStyle(color: _muted, fontSize: 11),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _volume,
+                  min: 0.0,
+                  max: 2.0,
+                  activeColor: _cyan,
+                  inactiveColor: _border,
+                  onChanged: (v) async {
+                    await widget.audioService.setVolume(v);
+                    setState(() => _volume = v);
+                  },
+                ),
+              ),
+              Text(
+                '${(_volume * 100).toInt()}%',
+                style: const TextStyle(color: _muted, fontSize: 11),
+              ),
+            ],
+          ),
         ],
       ),
     );
