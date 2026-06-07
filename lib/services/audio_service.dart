@@ -21,6 +21,8 @@ class AudioService {
 
   void setMuted(bool muted) => _isMuted = muted;
 
+  void Function(List<int> chunk)? onAudioChunk;
+
   Future<void> setVox({
     required bool enabled,
     required double threshold,
@@ -100,6 +102,7 @@ class AudioService {
           } catch (_) {}
         }
       }
+      onAudioChunk?.call(chunk);
     });
   }
 

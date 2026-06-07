@@ -5,6 +5,7 @@ import 'package:intercom_app/models/device.dart';
 import 'package:intercom_app/providers/call_provider.dart';
 import 'package:intercom_app/screens/call_screen.dart';
 import 'package:intercom_app/screens/discovery_screen.dart';
+import 'package:intercom_app/screens/group_screen.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -273,50 +274,45 @@ class _AdvancedCardState extends State<_AdvancedCard> {
 class _GroupCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _border),
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const GroupScreen()),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.group_outlined, color: _cyan, size: 18),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Sala grupal',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: _card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _border),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.group_outlined, color: _cyan, size: 18),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Sala grupal',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
-                SizedBox(height: 2),
-                Text(
-                  'Conectar varios dispositivos',
-                  style: TextStyle(color: _muted, fontSize: 10),
-                ),
-              ],
+                  SizedBox(height: 2),
+                  Text(
+                    'Conectar varios dispositivos',
+                    style: TextStyle(color: _muted, fontSize: 10),
+                  ),
+                ],
+              ),
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: _bg,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: _border),
-            ),
-            child: const Text(
-              'Próximamente',
-              style: TextStyle(color: _muted, fontSize: 9),
-            ),
-          ),
-        ],
+            const Icon(Icons.arrow_forward_ios, color: _muted, size: 14),
+          ],
+        ),
       ),
     );
   }
