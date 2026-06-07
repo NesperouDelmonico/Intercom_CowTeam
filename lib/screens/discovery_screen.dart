@@ -4,6 +4,8 @@ import 'package:intercom_app/models/device.dart';
 import 'package:intercom_app/services/discovery_service.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intercom_app/providers/settings_provider.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -11,14 +13,14 @@ const _card = Color(0xFF0D1F38);
 const _border = Color(0xFF1A3A5C);
 const _muted = Color(0xFF445566);
 
-class DiscoveryScreen extends StatefulWidget {
+class DiscoveryScreen extends ConsumerStatefulWidget {
   const DiscoveryScreen({super.key});
 
   @override
-  State<DiscoveryScreen> createState() => _DiscoveryScreenState();
+  ConsumerState<DiscoveryScreen> createState() => _DiscoveryScreenState();
 }
 
-class _DiscoveryScreenState extends State<DiscoveryScreen>
+class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
     with SingleTickerProviderStateMixin {
   final DiscoveryService _discovery = DiscoveryService();
   final List<Device> _devices = [];
@@ -61,7 +63,8 @@ class _DiscoveryScreenState extends State<DiscoveryScreen>
     };
 
     final info = await DeviceInfoPlugin().androidInfo;
-    final name = info.model;
+    final settings = ref.read(settingsProvider).value;
+    final name = settings?.deviceName ?? 'Android-${_myIp.split('.').last}';
     await _discovery.start(name);
   }
 

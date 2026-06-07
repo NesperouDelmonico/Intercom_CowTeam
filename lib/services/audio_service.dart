@@ -60,6 +60,10 @@ class AudioService {
 
     await channel.invokeMethod('startPlayback');
 
+    await channel.invokeMethod('startForegroundService', {
+      'deviceName': remoteIp,
+    });
+
     _sendSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     _receiveSocket = await RawDatagramSocket.bind(
       InternetAddress.anyIPv4,
@@ -111,6 +115,7 @@ class AudioService {
     _isMuted = false;
     _audioSubscription?.cancel();
     await _recorder.stop();
+    await channel.invokeMethod('stopForegroundService');
     await channel.invokeMethod('stopPlayback');
     _sendSocket?.close();
     _receiveSocket?.close();

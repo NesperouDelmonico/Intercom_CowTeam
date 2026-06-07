@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/call_state.dart';
 import 'package:intercom_app/models/device.dart';
@@ -6,6 +7,8 @@ import 'package:intercom_app/providers/call_provider.dart';
 import 'package:intercom_app/screens/call_screen.dart';
 import 'package:intercom_app/screens/discovery_screen.dart';
 import 'package:intercom_app/screens/group_screen.dart';
+import 'package:intercom_app/screens/settings_screen.dart';
+import 'package:intercom_app/providers/settings_provider.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -34,21 +37,37 @@ class HomeScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: const Text('Intercom'),
+        title: ref
+            .watch(settingsProvider)
+            .when(
+              data: (s) => Text(s.deviceName),
+              loading: () => const Text('Intercom'),
+              error: (_, __) => const Text('Intercom'),
+            ),
         actions: [
+          if (ref.watch(settingsProvider).value!.avatarPath != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: CircleAvatar(
+                radius: 16,
+                backgroundImage: FileImage(
+                  File(ref.watch(settingsProvider).value!.avatarPath!),
+                ),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, color: _cyan),
-            onPressed: () {},
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
           ),
           IconButton(
             icon: const Icon(Icons.info_outline, color: _cyan),
             onPressed: () {},
           ),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 0.5, color: _border),
-        ),
+        // ...resto igual
       ),
       body: call.status == CallStatus.incoming
           ? _IncomingCallScreen(

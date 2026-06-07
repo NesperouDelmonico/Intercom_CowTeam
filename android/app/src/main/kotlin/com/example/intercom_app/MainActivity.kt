@@ -17,6 +17,8 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.sqrt
+import android.content.Intent
+import android.os.Build
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.intercom_app/audio"
@@ -24,6 +26,7 @@ class MainActivity : FlutterActivity() {
     private var audioManager: AudioManager? = null
     private var bluetoothHeadset: BluetoothHeadset? = null
     private var isBtActive = false
+    private var currentAudioLevel: Float = 0f
 
     // VOX
     private var voxEnabled = false
@@ -70,6 +73,29 @@ class MainActivity : FlutterActivity() {
                     "setVolume" -> {
                         callVolume = (call.argument<Double>("volume") ?: 1.0).toFloat()
                         result.success(null)
+                    }
+                    "startForegroundService" -> {
+                        val deviceName = call.argument<String>("deviceName") ?: "Dispositivo"
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_START
+                            putExtra("deviceName", deviceName)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(null)
+                    }
+                    "stopForegroundService" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_STOP
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "getAudioLevel" -> {
+                        result.success(currentAudioLevel.toDouble())
                     }
                     else -> result.notImplemented()
                 }
@@ -119,6 +145,45 @@ class MainActivity : FlutterActivity() {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         audioTrack?.play()
+        startAudioLevelMonitor()
+    }
+
+    private var audioLevelThread: Thread? = null
+    private var isRecording = false
+
+    private fun startAudioLevelMonitor() {
+        val sampleRate = 16000
+        val bufferSize = AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        isRecording = true
+        audioLevelThread = Thread {
+            try {
+                val audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
+                val buffer = ShortArray(bufferSize)
+                audioRecord.startRecording()
+                while (isRecording) {
+                    val read = audioRecord.read(buffer, 0, bufferSize)
+                    if (read > 0) {
+                        var sum = 0.0
+                        for (i in 0 until read) sum += buffer[i] * buffer[i]
+                        val rms = sqrt(sum / read)
+                        currentAudioLevel = (rms.toFloat() / 8000f).coerceIn(0f, 1f)
+                    }
+                }
+                audioRecord.stop()
+                audioRecord.release()
+            } catch (_: Exception) {}
+        }
+        audioLevelThread?.start()
     }
 
     fun shouldTransmit(data: ByteArray): Boolean {
@@ -180,6 +245,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun stopAudioCall() {
+
+        isRecording = false
+        audioLevelThread?.interrupt()
+        audioLevelThread = null
+        currentAudioLevel = 0f
+
         if (isBtActive) {
             audioManager?.isBluetoothScoOn = false
             audioManager?.stopBluetoothSco()

@@ -4,6 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/call_state.dart';
 import 'package:intercom_app/providers/call_provider.dart';
 import 'package:intercom_app/services/audio_service.dart';
+import 'package:intercom_app/services/settings_service.dart';
+import 'package:intercom_app/providers/settings_provider.dart';
+import 'dart:io';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -24,11 +27,28 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   bool _isPushToTalk = false;
   bool _isSpeaker = false;
   bool _isBluetooth = false;
+  double _speakingLevel = 0.0;
 
   @override
   void initState() {
     super.initState();
+    _applyScreenSettings();
     _initAudioOutput();
+    _listenToAudioLevel();
+  }
+
+  void _listenToAudioLevel() {
+    const ch = MethodChannel('com.example.intercom_app/audio');
+    // Escuchar nivel de audio cada 100ms
+    Stream.periodic(const Duration(milliseconds: 100)).listen((_) async {
+      if (!mounted) return;
+      try {
+        final level = await ch.invokeMethod<double>('getAudioLevel') ?? 0.0;
+        if (mounted) setState(() => _speakingLevel = level.clamp(0.0, 1.0));
+      } catch (_) {
+        if (mounted) setState(() => _speakingLevel = 0.0);
+      }
+    });
   }
 
   Future<void> _initAudioOutput() async {
@@ -37,6 +57,16 @@ class _CallScreenState extends ConsumerState<CallScreen> {
       _isBluetooth = hasBt;
       _isSpeaker = !hasBt;
     });
+  }
+
+  Future<void> _applyScreenSettings() async {
+    final keep = await SettingsService.getKeepScreen();
+    if (keep) {
+      SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.manual,
+        overlays: SystemUiOverlay.values,
+      );
+    }
   }
 
   String _formatTime(Duration d) {
@@ -103,32 +133,50 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           children: [
             const Text('En llamada'),
             const SizedBox(width: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 100),
+              width: 88 + (_speakingLevel * 16),
+              height: 88 + (_speakingLevel * 16),
               decoration: BoxDecoration(
-                color: const Color(0xFF00CC44).withOpacity(0.15),
-                borderRadius: BorderRadius.circular(6),
+                shape: BoxShape.circle,
+                color: _card,
                 border: Border.all(
-                  color: const Color(0xFF00CC44).withOpacity(0.4),
+                  color: _speakingLevel > 0.1
+                      ? _cyan.withOpacity(0.4 + _speakingLevel * 0.6)
+                      : _cyan,
+                  width: 2 + (_speakingLevel * 4),
                 ),
               ),
-              child: const Row(
-                children: [
-                  Icon(Icons.circle, size: 6, color: Color(0xFF00CC44)),
-                  SizedBox(width: 4),
-                  Text(
-                    'Activa',
-                    style: TextStyle(color: Color(0xFF00CC44), fontSize: 11),
+              child: Center(
+                child: Text(
+                  initials,
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w500,
                   ),
-                ],
+                ),
               ),
             ),
           ],
         ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 0.5, color: _border),
-        ),
+        actions: [
+          ref
+              .watch(settingsProvider)
+              .when(
+                data: (s) => s.avatarPath != null
+                    ? Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: CircleAvatar(
+                          radius: 16,
+                          backgroundImage: FileImage(File(s.avatarPath!)),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+                loading: () => const SizedBox.shrink(),
+                error: (_, __) => const SizedBox.shrink(),
+              ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(24),
