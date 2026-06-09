@@ -9,6 +9,8 @@ import 'package:intercom_app/screens/discovery_screen.dart';
 import 'package:intercom_app/screens/group_screen.dart';
 import 'package:intercom_app/screens/settings_screen.dart';
 import 'package:intercom_app/providers/settings_provider.dart';
+import 'package:intercom_app/providers/room_provider.dart';
+import 'package:intercom_app/models/room_state.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -45,7 +47,7 @@ class HomeScreen extends ConsumerWidget {
               error: (_, __) => const Text('Intercom'),
             ),
         actions: [
-          if (ref.watch(settingsProvider).value!.avatarPath != null)
+          if (ref.watch(settingsProvider).value?.avatarPath != null)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: CircleAvatar(
@@ -188,14 +190,60 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-class _AdvancedCard extends StatefulWidget {
+class _AdvancedCard extends ConsumerStatefulWidget {
   @override
-  State<_AdvancedCard> createState() => _AdvancedCardState();
+  ConsumerState<_AdvancedCard> createState() => _AdvancedCardState();
 }
 
-class _AdvancedCardState extends State<_AdvancedCard> {
+class _AdvancedCardState extends ConsumerState<_AdvancedCard> {
   bool _expanded = false;
-  final _ipController = TextEditingController();
+  bool _searching = false;
+  String? _error;
+  final _codeController = TextEditingController();
+
+  Future<void> _connect() async {
+    final input = _codeController.text.trim();
+    if (input.isEmpty) return;
+
+    setState(() {
+      _searching = true;
+      _error = null;
+    });
+
+    // Intentar como código de sala grupal
+    await ref.read(roomProvider.notifier).joinRoomByCode(input);
+
+    if (context.mounted) {
+      final room = ref.read(roomProvider);
+      if (room.status != RoomStatus.idle) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const GroupScreen()),
+        );
+        setState(() => _searching = false);
+        return;
+      }
+    }
+
+    // Si no encontró sala, intentar como IP directa para llamada 1:1
+    if (input.contains('.')) {
+      final device = Device(
+        name: 'Android-${input.split('.').last}',
+        ip: input,
+        port: 5555,
+      );
+      if (context.mounted) {
+        ref.read(callProvider.notifier).startCall(device);
+      }
+      setState(() => _searching = false);
+      return;
+    }
+
+    setState(() {
+      _searching = false;
+      _error = 'No se encontró ninguna sala con ese código';
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -250,37 +298,64 @@ class _AdvancedCardState extends State<_AdvancedCard> {
           if (_expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _ipController,
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      decoration: InputDecoration(
-                        hintText: '192.168.1.x',
-                        hintStyle: const TextStyle(color: _muted),
-                        filled: true,
-                        fillColor: _bg,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          borderSide: const BorderSide(color: _border),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          borderSide: const BorderSide(color: _border),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 10,
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _codeController,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                          ),
+                          decoration: InputDecoration(
+                            hintText: 'Código de sala o IP',
+                            hintStyle: const TextStyle(color: _muted),
+                            filled: true,
+                            fillColor: _bg,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(color: _border),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(color: _border),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 10,
+                            ),
+                          ),
                         ),
                       ),
+                      const SizedBox(width: 8),
+                      _searching
+                          ? const SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: CircularProgressIndicator(
+                                color: _cyan,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : ElevatedButton(
+                              onPressed: _connect,
+                              child: const Text('Conectar'),
+                            ),
+                    ],
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: Color(0xFFCC4444),
+                        fontSize: 11,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: () {},
-                    child: const Text('Conectar'),
-                  ),
+                  ],
                 ],
               ),
             ),

@@ -3,111 +3,131 @@ import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:intercom_app/models/device.dart';
+import 'package:network_info_plus/network_info_plus.dart';
+
+class RoomMember {
+  final String name;
+  final String ip;
+  bool isMuted;
+  double volume;
+  double speakingLevel;
+
+  RoomMember({
+    required this.name,
+    required this.ip,
+    this.isMuted = false,
+    this.volume = 1.0,
+    this.speakingLevel = 0.0,
+  });
+
+  Device toDevice() => Device(name: name, ip: ip, port: RoomService.audioPort);
+}
 
 class RoomService {
-  static const int roomPort = 5560;
+  static const int audioPort = 5560;
   static const int signalPort = 5561;
+  static const int announcePort = 5562;
   static const int maxMembers = 10;
 
   RawDatagramSocket? _audioSocket;
   RawDatagramSocket? _signalSocket;
+  RawDatagramSocket? _announceSocket;
 
-  final List<Device> _members = [];
+  final Map<String, RoomMember> _members = {};
   bool _isHost = false;
   String? _hostIp;
+  String _myIp = '';
+  String _myName = '';
   Timer? _heartbeatTimer;
+  Timer? _announceTimer;
 
-  void Function(List<Device> members)? onMembersChanged;
-  void Function(Uint8List audio)? onAudioReceived;
+  void Function(Map<String, RoomMember> members)? onMembersChanged;
+  void Function(Uint8List audio, String fromIp)? onAudioReceived;
 
-  List<Device> get members => List.unmodifiable(_members);
+  Map<String, RoomMember> get members => Map.unmodifiable(_members);
   bool get isHost => _isHost;
 
-  // Genera código de sala de 4 dígitos
-  String generateRoomCode() {
-    return (1000 + Random().nextInt(9000)).toString();
-  }
+  String generateRoomCode() => (1000 + Random().nextInt(9000)).toString();
 
-  // HOST: crear sala
   Future<void> createRoom(String myName, String myIp) async {
     _isHost = true;
-    _members.clear();
-    _members.add(Device(name: myName, ip: myIp, port: roomPort));
+    _myIp = myIp;
+    _myName = myName;
+    _members[myIp] = RoomMember(name: myName, ip: myIp);
 
-    _audioSocket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      roomPort,
-      reuseAddress: true,
-    );
-
-    _signalSocket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      signalPort,
-      reuseAddress: true,
-    );
-
-    // Escuchar audio de clientes y mezclarlo
-    _audioSocket!.listen((event) {
-      if (event == RawSocketEvent.read) {
-        final dg = _audioSocket!.receive();
-        if (dg == null) return;
-        _mixAndRedistribute(dg.data, dg.address.address);
-      }
-    });
-
-    // Escuchar señales de join/leave
-    _signalSocket!.listen((event) {
-      if (event == RawSocketEvent.read) {
-        final dg = _signalSocket!.receive();
-        if (dg == null) return;
-        final msg = String.fromCharCodes(dg.data);
-        final ip = dg.address.address;
-        _handleSignal(msg, ip);
-      }
-    });
+    await _bindSockets();
+    _listenSignals();
+    _listenAudio();
+    _startAnnounce();
   }
 
-  // CLIENTE: unirse a sala
   Future<void> joinRoom(String myName, String myIp, String hostIp) async {
     _isHost = false;
+    _myIp = myIp;
+    _myName = myName;
     _hostIp = hostIp;
 
-    _audioSocket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      roomPort,
-      reuseAddress: true,
-    );
-
-    _signalSocket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      signalPort,
-      reuseAddress: true,
-    );
-
-    // Recibir audio mezclado del host
-    _audioSocket!.listen((event) {
-      if (event == RawSocketEvent.read) {
-        final dg = _audioSocket!.receive();
-        if (dg != null) onAudioReceived?.call(dg.data);
-      }
-    });
-
-    // Escuchar actualizaciones de miembros del host
-    _signalSocket!.listen((event) {
-      if (event == RawSocketEvent.read) {
-        final dg = _signalSocket!.receive();
-        if (dg == null) return;
-        final msg = String.fromCharCodes(dg.data);
-        _handleClientSignal(msg);
-      }
-    });
+    await _bindSockets();
+    _listenSignals();
+    _listenAudio();
 
     // Anunciarse al host
     _sendSignal('JOIN:$myName:$myIp', hostIp);
 
-    // Heartbeat cada 3 segundos para mantenerse en la sala
+    // Heartbeat
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendSignal('HEARTBEAT:$myName:$myIp', hostIp);
+    });
+  }
+
+  Future<void> _bindSockets() async {
+    _audioSocket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      audioPort,
+      reuseAddress: true,
+    );
+    _signalSocket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      signalPort,
+      reuseAddress: true,
+    );
+  }
+
+  void _listenAudio() {
+    _audioSocket!.listen((event) {
+      if (event == RawSocketEvent.read) {
+        final dg = _audioSocket!.receive();
+        if (dg == null) return;
+        final fromIp = dg.address.address;
+        // Calcular nivel de voz del remitente
+        _updateSpeakingLevel(fromIp, dg.data);
+        onAudioReceived?.call(dg.data, fromIp);
+      }
+    });
+  }
+
+  void _updateSpeakingLevel(String ip, Uint8List data) {
+    if (!_members.containsKey(ip)) return;
+    double sum = 0;
+    for (int i = 0; i < data.length - 1; i += 2) {
+      final s = data[i] | (data[i + 1] << 8);
+      final signed = s > 32767 ? s - 65536 : s;
+      sum += signed * signed;
+    }
+    final rms = data.length > 1 ? (sum / (data.length / 2)) : 0.0;
+    _members[ip]!.speakingLevel = (rms / (8000.0 * 8000.0)).clamp(0.0, 1.0);
+    onMembersChanged?.call(_members);
+  }
+
+  void _listenSignals() {
+    _signalSocket!.listen((event) {
+      if (event == RawSocketEvent.read) {
+        final dg = _signalSocket!.receive();
+        if (dg == null) return;
+        final msg = String.fromCharCodes(dg.data);
+        final fromIp = dg.address.address;
+        _handleSignal(msg, fromIp);
+      }
     });
   }
 
@@ -117,69 +137,222 @@ class RoomService {
       if (parts.length < 3) return;
       final name = parts[1];
       final ip = parts[2];
-      if (_members.length < maxMembers && !_members.any((m) => m.ip == ip)) {
-        _members.add(Device(name: name, ip: ip, port: roomPort));
+      if (_members.length < maxMembers && !_members.containsKey(ip)) {
+        _members[ip] = RoomMember(name: name, ip: ip);
         onMembersChanged?.call(_members);
-        _broadcastMembers();
+        // Enviar lista actualizada a todos
+        _broadcastMemberList();
+        // Enviar lista actual al recién unido
+        _sendMemberListTo(ip);
       }
     } else if (msg.startsWith('LEAVE:')) {
       final ip = msg.split(':')[1];
-      _members.removeWhere((m) => m.ip == ip);
+      _members.remove(ip);
       onMembersChanged?.call(_members);
-      _broadcastMembers();
-    } else if (msg.startsWith('HEARTBEAT:')) {
-      // mantener vivo — no hace nada más
+      if (_isHost) _broadcastMemberList();
+    } else if (msg.startsWith('MEMBERS:')) {
+      // Solo clientes reciben esto
+      if (_isHost) return;
+      _parseMemberList(msg.substring(8));
+    } else if (msg.startsWith('MUTE:')) {
+      final parts = msg.split(':');
+      if (parts.length < 3) return;
+      final ip = parts[1];
+      final muted = parts[2] == '1';
+      if (_members.containsKey(ip)) {
+        _members[ip]!.isMuted = muted;
+        onMembersChanged?.call(_members);
+      }
+    } else if (msg.startsWith('ROOM_QUERY:')) {
+      final queryCode = msg.split(':')[1];
+      // El host responde con su código de sala
+      // El código se guarda en room_provider, así que necesitamos
+      // una forma de accederlo — lo enviamos via el announce socket
+      onRoomQuery?.call(queryCode, fromIp);
     }
   }
 
-  void _handleClientSignal(String msg) {
-    if (msg.startsWith('MEMBERS:')) {
-      final raw = msg.substring(8);
-      if (raw.isEmpty) return;
-      final entries = raw.split(',');
-      _members.clear();
-      for (final e in entries) {
-        final p = e.split(':');
-        if (p.length >= 2) {
-          _members.add(Device(name: p[0], ip: p[1], port: roomPort));
+  void Function(String code, String fromIp)? onRoomQuery;
+
+  void _parseMemberList(String raw) {
+    if (raw.isEmpty) return;
+    final currentIps = <String>{};
+    for (final entry in raw.split(',')) {
+      final p = entry.split(':');
+      if (p.length < 2) continue;
+      final name = p[0];
+      final ip = p[1];
+      currentIps.add(ip);
+      if (!_members.containsKey(ip)) {
+        _members[ip] = RoomMember(name: name, ip: ip);
+      }
+    }
+    // Eliminar los que ya no están
+    _members.removeWhere((ip, _) => !currentIps.contains(ip));
+    onMembersChanged?.call(_members);
+  }
+
+  void _broadcastMemberList() {
+    final payload = _members.entries
+        .map((e) => '${e.value.name}:${e.key}')
+        .join(',');
+    final msg = 'MEMBERS:$payload';
+    for (final ip in _members.keys) {
+      if (ip != _myIp) _sendSignal(msg, ip);
+    }
+  }
+
+  void _sendMemberListTo(String ip) {
+    final payload = _members.entries
+        .map((e) => '${e.value.name}:${e.key}')
+        .join(',');
+    _sendSignal('MEMBERS:$payload', ip);
+  }
+
+  void _startAnnounce() {
+    _announceSocket = null;
+    RawDatagramSocket.bind(InternetAddress.anyIPv4, 0).then((socket) {
+      _announceSocket = socket;
+      socket.broadcastEnabled = true;
+    });
+  }
+
+  void announceRoom(String code) {
+    _announceTimer?.cancel();
+    _announceTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      try {
+        _announceSocket?.send(
+          'ROOM:$code:$_myIp'.codeUnits,
+          InternetAddress('255.255.255.255'),
+          announcePort,
+        );
+      } catch (_) {}
+    });
+  }
+
+  static Future<String?> findRoomHost(String code) async {
+    // Estrategia 1: escuchar broadcast
+    final broadcastResult = await _findByBroadcast(code);
+    if (broadcastResult != null) return broadcastResult;
+
+    // Estrategia 2: escaneo directo de subred
+    return await _findBySubnetScan(code);
+  }
+
+  static Future<String?> _findByBroadcast(String code) async {
+    try {
+      final socket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        announcePort,
+        reuseAddress: true,
+      );
+      final completer = Completer<String?>();
+
+      socket.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = socket.receive();
+          if (dg == null) return;
+          final msg = String.fromCharCodes(dg.data);
+          if (msg.startsWith('ROOM:$code:') && !completer.isCompleted) {
+            completer.complete(msg.split(':')[2]);
+          }
+        }
+      });
+
+      Future.delayed(const Duration(seconds: 3), () {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      final result = await completer.future;
+      socket.close();
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<String?> _findBySubnetScan(String code) async {
+    try {
+      final myIp = await NetworkInfo().getWifiIP();
+      if (myIp == null) return null;
+
+      final prefix = myIp.substring(0, myIp.lastIndexOf('.'));
+      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+
+      final completer = Completer<String?>();
+      final receiveSocket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        announcePort,
+        reuseAddress: true,
+      );
+
+      receiveSocket.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = receiveSocket.receive();
+          if (dg == null) return;
+          final msg = String.fromCharCodes(dg.data);
+          if (msg.startsWith('ROOM:$code:') && !completer.isCompleted) {
+            completer.complete(msg.split(':')[2]);
+          }
+        }
+      });
+
+      // Enviar ping a cada IP de la subred
+      for (int i = 1; i <= 254; i++) {
+        if (completer.isCompleted) break;
+        final targetIp = '$prefix.$i';
+        if (targetIp == myIp) continue;
+        try {
+          socket.send(
+            'ROOM_QUERY:$code'.codeUnits,
+            InternetAddress(targetIp),
+            signalPort,
+          );
+        } catch (_) {}
+        if (i % 20 == 0) {
+          await Future.delayed(const Duration(milliseconds: 30));
         }
       }
-      onMembersChanged?.call(_members);
+
+      Future.delayed(const Duration(seconds: 5), () {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      final result = await completer.future;
+      socket.close();
+      receiveSocket.close();
+      return result;
+    } catch (_) {
+      return null;
     }
   }
 
-  void _broadcastMembers() {
-    final payload = _members.map((m) => '${m.name}:${m.ip}').join(',');
-    final msg = 'MEMBERS:$payload';
-    for (final m in _members) {
-      _sendSignal(msg, m.ip);
-    }
-  }
-
-  // Mixer: suma PCM de todos y redistribuye
-  void _mixAndRedistribute(Uint8List incoming, String fromIp) {
-    // Reproducir localmente en el host
-    onAudioReceived?.call(incoming);
-
-    // Reenviar a todos los demás miembros
-    for (final member in _members) {
-      if (member.ip != fromIp) {
-        try {
-          _audioSocket?.send(incoming, InternetAddress(member.ip), roomPort);
-        } catch (_) {}
-      }
-    }
-  }
-
+  // MESH P2P: enviar audio directamente a todos
   void sendAudio(Uint8List data) {
-    if (_isHost) {
-      // Host reproduce directo y redistribuye
-      _mixAndRedistribute(data, 'self');
-    } else if (_hostIp != null) {
+    for (final entry in _members.entries) {
+      if (entry.key == _myIp) continue;
+      if (entry.value.isMuted) continue;
       try {
-        _audioSocket?.send(data, InternetAddress(_hostIp!), roomPort);
+        _audioSocket?.send(data, InternetAddress(entry.key), audioPort);
       } catch (_) {}
     }
+  }
+
+  void setMemberMuted(String ip, bool muted) {
+    if (!_members.containsKey(ip)) return;
+    _members[ip]!.isMuted = muted;
+    // Notificar a todos
+    final msg = 'MUTE:$ip:${muted ? '1' : '0'}';
+    for (final memberIp in _members.keys) {
+      if (memberIp != _myIp) _sendSignal(msg, memberIp);
+    }
+    onMembersChanged?.call(_members);
+  }
+
+  void setMemberVolume(String ip, double volume) {
+    if (!_members.containsKey(ip)) return;
+    _members[ip]!.volume = volume;
+    onMembersChanged?.call(_members);
   }
 
   void _sendSignal(String msg, String ip) {
@@ -188,21 +361,39 @@ class RoomService {
     } catch (_) {}
   }
 
-  void leaveRoom(String myIp) {
+  void leaveRoom() {
     if (_hostIp != null) {
-      _sendSignal('LEAVE:$myIp', _hostIp!);
+      _sendSignal('LEAVE:$_myIp', _hostIp!);
+    } else if (_isHost) {
+      // Notificar a todos que el host se va
+      for (final ip in _members.keys) {
+        if (ip != _myIp) _sendSignal('LEAVE:$_myIp', ip);
+      }
     }
     close();
   }
 
   void close() {
     _heartbeatTimer?.cancel();
+    _announceTimer?.cancel();
     _audioSocket?.close();
     _signalSocket?.close();
+    _announceSocket?.close();
     _audioSocket = null;
     _signalSocket = null;
+    _announceSocket = null;
     _members.clear();
     _isHost = false;
     _hostIp = null;
+  }
+
+  void respondToQuery(String toIp, String code) {
+    try {
+      _announceSocket?.send(
+        'ROOM:$code:$_myIp'.codeUnits,
+        InternetAddress(toIp),
+        announcePort,
+      );
+    } catch (_) {}
   }
 }

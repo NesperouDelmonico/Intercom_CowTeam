@@ -1,31 +1,35 @@
-import 'package:intercom_app/models/device.dart';
+import 'package:intercom_app/services/room_service.dart';
 
 enum RoomStatus { idle, hosting, joined }
 
 class RoomState {
   final RoomStatus status;
   final String? roomCode;
-  final List<Device> members;
+  final Map<String, RoomMember> members;
   final bool isHost;
+  final bool globalMuted;
 
   const RoomState({
     this.status = RoomStatus.idle,
     this.roomCode,
-    this.members = const [],
+    this.members = const {},
     this.isHost = false,
+    this.globalMuted = false,
   });
 
   RoomState copyWith({
     RoomStatus? status,
     String? roomCode,
-    List<Device>? members,
+    Map<String, RoomMember>? members,
     bool? isHost,
+    bool? globalMuted,
   }) {
     return RoomState(
       status: status ?? this.status,
       roomCode: roomCode ?? this.roomCode,
       members: members ?? this.members,
       isHost: isHost ?? this.isHost,
+      globalMuted: globalMuted ?? this.globalMuted,
     );
   }
 }

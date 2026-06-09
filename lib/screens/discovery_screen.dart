@@ -1,11 +1,13 @@
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:intercom_app/models/device.dart';
-import 'package:intercom_app/services/discovery_service.dart';
-import 'package:network_info_plus/network_info_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intercom_app/models/device.dart';
+import 'package:intercom_app/providers/call_provider.dart';
 import 'package:intercom_app/providers/settings_provider.dart';
+import 'package:intercom_app/services/wifi_direct_service.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'dart:math' as dart_math;
+import 'dart:io';
+import 'dart:async';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -22,10 +24,11 @@ class DiscoveryScreen extends ConsumerStatefulWidget {
 
 class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
     with SingleTickerProviderStateMixin {
-  final DiscoveryService _discovery = DiscoveryService();
-  final List<Device> _devices = [];
-  String _myIp = '';
+  final _wifiDirect = WifiDirectService();
+  final List<WifiDirectPeer> _peers = [];
   bool _scanning = false;
+  bool _connecting = false;
+  String? _connectingAddress;
   late AnimationController _radarController;
 
   @override
@@ -35,49 +38,125 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
       vsync: this,
       duration: const Duration(seconds: 2),
     );
-    _getMyIp();
+
+    _wifiDirect.startListening();
+    _wifiDirect.onPeersChanged = (peers) {
+      setState(
+        () => _peers
+          ..clear()
+          ..addAll(peers),
+      );
+    };
+
+    _wifiDirect.onConnected = (info) async {
+      final settings = ref.read(settingsProvider).value;
+      final name = settings?.deviceName ?? 'Dispositivo';
+
+      String remoteIp;
+      if (info.isGroupOwner) {
+        // Soy el Group Owner — el cliente se conectará a mí en 192.168.49.1
+        // Espero que el cliente me envíe su IP por UDP
+        remoteIp = await _waitForClientIp();
+      } else {
+        remoteIp = info.groupOwnerAddress;
+
+        // Anunciarse al Group Owner
+        final announceSocket = await RawDatagramSocket.bind(
+          InternetAddress.anyIPv4,
+          0,
+        );
+        for (int i = 0; i < 5; i++) {
+          announceSocket.send(
+            'HELLO:client'.codeUnits,
+            InternetAddress(remoteIp),
+            5558,
+          );
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+        announceSocket.close();
+      }
+
+      final device = Device(name: name, ip: remoteIp, port: 5555);
+
+      if (context.mounted) Navigator.pop(context, device);
+    };
   }
 
-  Future<void> _getMyIp() async {
-    final ip = await NetworkInfo().getWifiIP();
-    setState(() => _myIp = ip ?? 'desconocida');
+  Future<String> _waitForClientIp() async {
+    final socket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      5558,
+      reuseAddress: true,
+    );
+
+    final completer = Completer<String>();
+
+    socket.listen((event) {
+      if (event == RawSocketEvent.read) {
+        final dg = socket.receive();
+        if (dg != null) {
+          final msg = String.fromCharCodes(dg.data);
+          if (msg.startsWith('HELLO:')) {
+            final ip = dg.address.address;
+            if (!completer.isCompleted) completer.complete(ip);
+          }
+        }
+      }
+    });
+
+    // Timeout de 10 segundos
+    Future.delayed(const Duration(seconds: 10), () {
+      if (!completer.isCompleted) completer.complete('192.168.49.2');
+    });
+
+    final result = await completer.future;
+    socket.close();
+    return result;
   }
 
-  Future<bool> _requestPermissions() async {
+  Future<void> _requestPermissionsAndScan() async {
     final location = await Permission.locationWhenInUse.request();
-    return !location.isDenied && !location.isPermanentlyDenied;
-  }
-
-  Future<void> _startScan() async {
-    final granted = await _requestPermissions();
-    if (!granted) return;
+    if (location.isDenied) return;
 
     setState(() {
       _scanning = true;
-      _devices.clear();
+      _peers.clear();
     });
     _radarController.repeat();
 
-    _discovery.onDeviceFound = (device) {
-      setState(() => _devices.add(device));
-    };
-
-    final info = await DeviceInfoPlugin().androidInfo;
-    final settings = ref.read(settingsProvider).value;
-    final name = settings?.deviceName ?? 'Android-${_myIp.split('.').last}';
-    await _discovery.start(name);
+    try {
+      await _wifiDirect.discoverPeers();
+    } catch (e) {
+      setState(() => _scanning = false);
+      _radarController.stop();
+    }
   }
 
   void _stopScan() {
-    _discovery.stop();
+    _wifiDirect.stopDiscovery();
     _radarController.stop();
     setState(() => _scanning = false);
+  }
+
+  Future<void> _connectToPeer(WifiDirectPeer peer) async {
+    setState(() {
+      _connecting = true;
+      _connectingAddress = peer.address;
+    });
+    try {
+      await _wifiDirect.connect(peer.address);
+    } catch (e) {
+      setState(() {
+        _connecting = false;
+        _connectingAddress = null;
+      });
+    }
   }
 
   @override
   void dispose() {
     _radarController.dispose();
-    _discovery.stop();
+    _wifiDirect.dispose();
     super.dispose();
   }
 
@@ -89,7 +168,10 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
         title: const Text('Buscar dispositivos'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: _cyan),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () {
+            _wifiDirect.stopDiscovery();
+            Navigator.pop(context);
+          },
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
@@ -100,8 +182,73 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            _StatusCard(scanning: _scanning, myIp: _myIp),
+            // Status card
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _scanning ? _cyan.withOpacity(0.5) : _border,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: _scanning ? _cyan.withOpacity(0.1) : _bg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _scanning ? _cyan.withOpacity(0.5) : _border,
+                      ),
+                    ),
+                    child: Icon(
+                      _scanning ? Icons.wifi_tethering : Icons.wifi_off,
+                      color: _scanning ? _cyan : _muted,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _scanning
+                              ? 'WiFi Direct activo'
+                              : 'Listo para buscar',
+                          style: TextStyle(
+                            color: _scanning ? _cyan : Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _scanning
+                              ? 'Buscando dispositivos cercanos'
+                              : 'Sin router necesario',
+                          style: const TextStyle(color: _muted, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _scanning ? _cyan : _muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 12),
+
+            // Botón buscar/detener
             _scanning
                 ? OutlinedButton.icon(
                     onPressed: _stopScan,
@@ -120,9 +267,9 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
                     ),
                   )
                 : ElevatedButton.icon(
-                    onPressed: _startScan,
-                    icon: const Icon(Icons.search),
-                    label: const Text('Buscar dispositivos'),
+                    onPressed: _requestPermissionsAndScan,
+                    icon: const Icon(Icons.wifi_tethering),
+                    label: const Text('Buscar con WiFi Direct'),
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(
                         vertical: 14,
@@ -131,114 +278,133 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
                     ),
                   ),
             const SizedBox(height: 16),
-            if (_scanning && _devices.isEmpty) ...[
+
+            if (_scanning && _peers.isEmpty) ...[
               const SizedBox(height: 8),
-              _RadarWidget(controller: _radarController),
+              AnimatedBuilder(
+                animation: _radarController,
+                builder: (context, _) => SizedBox(
+                  width: 120,
+                  height: 120,
+                  child: CustomPaint(
+                    painter: _RadarPainter(_radarController.value),
+                  ),
+                ),
+              ),
               const SizedBox(height: 16),
               const Text(
-                'Esperando dispositivos...',
+                'Buscando dispositivos cercanos...',
                 style: TextStyle(color: _muted, fontSize: 12),
               ),
+              const SizedBox(height: 4),
+              const Text(
+                'Asegúrate de que el otro teléfono\ntambién esté buscando',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _muted, fontSize: 11),
+              ),
             ],
-            if (_devices.isNotEmpty) ...[
+
+            if (_peers.isNotEmpty) ...[
               const SizedBox(height: 8),
               Expanded(
                 child: ListView.separated(
-                  itemCount: _devices.length,
+                  itemCount: _peers.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (context, i) => _DeviceItem(device: _devices[i]),
+                  itemBuilder: (context, i) {
+                    final peer = _peers[i];
+                    final isConnecting =
+                        _connecting && _connectingAddress == peer.address;
+                    final initials = peer.name.length >= 2
+                        ? peer.name.substring(0, 2).toUpperCase()
+                        : peer.name.toUpperCase();
+
+                    return Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _card,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: _border),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _bg,
+                              border: Border.all(color: _cyan, width: 1),
+                            ),
+                            child: Center(
+                              child: Text(
+                                initials,
+                                style: const TextStyle(
+                                  color: _cyan,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  peer.name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  peer.status == 0
+                                      ? 'Conectado'
+                                      : peer.status == 3
+                                      ? 'Disponible'
+                                      : 'Visible',
+                                  style: TextStyle(
+                                    color: peer.status == 0 ? _cyan : _muted,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          isConnecting
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    color: _cyan,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : ElevatedButton(
+                                  onPressed: () => _connectToPeer(peer),
+                                  style: ElevatedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 8,
+                                    ),
+                                    minimumSize: Size.zero,
+                                    textStyle: const TextStyle(fontSize: 12),
+                                  ),
+                                  child: const Text('Conectar'),
+                                ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
           ],
         ),
       ),
-    );
-  }
-}
-
-class _StatusCard extends StatelessWidget {
-  final bool scanning;
-  final String myIp;
-  const _StatusCard({required this.scanning, required this.myIp});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: scanning ? _cyan.withOpacity(0.5) : _border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: scanning ? _cyan.withOpacity(0.1) : _bg,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: scanning ? _cyan.withOpacity(0.5) : _border,
-              ),
-            ),
-            child: Icon(
-              scanning ? Icons.radar : Icons.search,
-              color: scanning ? _cyan : _muted,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  scanning ? 'Buscando...' : 'Listo para buscar',
-                  style: TextStyle(
-                    color: scanning ? _cyan : Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  scanning ? 'Tu IP: $myIp' : 'Presiona buscar',
-                  style: const TextStyle(color: _muted, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: scanning ? _cyan : _muted,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RadarWidget extends StatelessWidget {
-  final AnimationController controller;
-  const _RadarWidget({required this.controller});
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, _) {
-        return SizedBox(
-          width: 120,
-          height: 120,
-          child: CustomPaint(painter: _RadarPainter(controller.value)),
-        );
-      },
     );
   }
 }
@@ -258,112 +424,24 @@ class _RadarPainter extends CustomPainter {
       canvas.drawCircle(center, size.width / 2 * i / 3, paint);
     }
 
+    final angle = progress * 2 * 3.14159;
     final sweepPaint = Paint()
       ..color = const Color(0xFF00E5FF).withOpacity(0.6)
       ..strokeWidth = 1.5
       ..style = PaintingStyle.stroke;
 
-    final angle = progress * 2 * 3.14159;
     canvas.drawLine(
       center,
       Offset(
-            center.dx +
-                size.width /
-                    2 *
-                    0.9 *
-                    (1 * 1.0) *
-                    (angle.toString().isNotEmpty ? 1 : 1),
-            center.dy,
-          ) +
-          Offset(
-            (size.width / 2 * 0.9 * (1.0)) *
-                    (angle.toString().length > 0 ? 1 : 1) -
-                size.width / 2 * 0.9,
-            0,
-          ),
+        center.dx + size.width / 2 * 0.9 * dart_math.cos(angle),
+        center.dy + size.width / 2 * 0.9 * dart_math.sin(angle),
+      ),
       sweepPaint,
     );
 
-    final dotPaint = Paint()
-      ..color = const Color(0xFF00E5FF)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(center, 4, dotPaint);
+    canvas.drawCircle(center, 4, Paint()..color = const Color(0xFF00E5FF));
   }
 
   @override
   bool shouldRepaint(_RadarPainter old) => old.progress != progress;
-}
-
-class _DeviceItem extends StatelessWidget {
-  final Device device;
-  const _DeviceItem({required this.device});
-
-  @override
-  Widget build(BuildContext context) {
-    final initials = device.name.length >= 2
-        ? device.name.substring(0, 2).toUpperCase()
-        : device.name.toUpperCase();
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: _bg,
-              border: Border.all(color: _cyan, width: 1),
-            ),
-            child: Center(
-              child: Text(
-                initials,
-                style: const TextStyle(
-                  color: _cyan,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  device.name,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  device.ip,
-                  style: const TextStyle(color: _muted, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, device),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              minimumSize: Size.zero,
-              textStyle: const TextStyle(fontSize: 12),
-            ),
-            child: const Text('Llamar'),
-          ),
-        ],
-      ),
-    );
-  }
 }

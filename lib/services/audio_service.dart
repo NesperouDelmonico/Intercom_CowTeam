@@ -6,7 +6,7 @@ import 'package:record/record.dart';
 
 class AudioService {
   static const channel = MethodChannel('com.example.intercom_app/audio');
-  final AudioRecorder _recorder = AudioRecorder();
+  final recorder = AudioRecorder();
   RawDatagramSocket? _sendSocket;
   RawDatagramSocket? _receiveSocket;
   StreamSubscription? _audioSubscription;
@@ -39,7 +39,7 @@ class AudioService {
     await channel.invokeMethod('setVolume', {'volume': volume});
   }
 
-  bool _shouldTransmit(List<int> chunk) {
+  bool shouldTransmit(List<int> chunk) {
     if (!_voxEnabled) return true;
     double sum = 0;
     for (int i = 0; i < chunk.length - 1; i += 2) {
@@ -47,7 +47,7 @@ class AudioService {
       final signed = sample > 32767 ? sample - 65536 : sample;
       sum += signed * signed;
     }
-    final rms = (sum / (chunk.length / 2)) > 0 ? (sum / (chunk.length / 2)) : 0;
+    final rms = chunk.length > 1 ? (sum / (chunk.length / 2)) : 0.0;
     return rms > (_voxThreshold * _voxThreshold);
   }
 
@@ -80,10 +80,10 @@ class AudioService {
       }
     });
 
-    final hasPermission = await _recorder.hasPermission();
+    final hasPermission = await recorder.hasPermission();
     if (!hasPermission) return;
 
-    final stream = await _recorder.startStream(
+    final stream = await recorder.startStream(
       const RecordConfig(
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
@@ -96,17 +96,18 @@ class AudioService {
 
     _audioSubscription = stream.listen((chunk) {
       if (_sendSocket != null && _isRunning && !_isMuted) {
-        if (_shouldTransmit(chunk)) {
+        final processed = applyGain(chunk, micGain);
+        if (shouldTransmit(processed)) {
           try {
             _sendSocket!.send(
-              Uint8List.fromList(chunk),
+              Uint8List.fromList(processed),
               InternetAddress(remoteIp),
               remotePort,
             );
           } catch (_) {}
         }
+        onAudioChunk?.call(processed);
       }
-      onAudioChunk?.call(chunk);
     });
   }
 
@@ -114,12 +115,30 @@ class AudioService {
     _isRunning = false;
     _isMuted = false;
     _audioSubscription?.cancel();
-    await _recorder.stop();
+    await recorder.stop();
     await channel.invokeMethod('stopForegroundService');
     await channel.invokeMethod('stopPlayback');
     _sendSocket?.close();
     _receiveSocket?.close();
     _sendSocket = null;
     _receiveSocket = null;
+  }
+
+  double micGain = 1.0;
+
+  void setMicGain(double gain) => micGain = gain;
+
+  // Cambia _applyGain por applyGain (público):
+  List<int> applyGain(List<int> chunk, double gain) {
+    if (gain == 1.0) return chunk;
+    final result = List<int>.filled(chunk.length, 0);
+    for (int i = 0; i < chunk.length - 1; i += 2) {
+      final s = chunk[i] | (chunk[i + 1] << 8);
+      final signed = s > 32767 ? s - 65536 : s;
+      final amplified = (signed * gain).round().clamp(-32768, 32767);
+      result[i] = amplified & 0xFF;
+      result[i + 1] = (amplified >> 8) & 0xFF;
+    }
+    return result;
   }
 }

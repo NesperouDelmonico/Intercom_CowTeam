@@ -19,6 +19,8 @@ import io.flutter.plugin.common.MethodChannel
 import kotlin.math.sqrt
 import android.content.Intent
 import android.os.Build
+import android.net.wifi.p2p.WifiP2pManager
+import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.intercom_app/audio"
@@ -27,6 +29,9 @@ class MainActivity : FlutterActivity() {
     private var bluetoothHeadset: BluetoothHeadset? = null
     private var isBtActive = false
     private var currentAudioLevel: Float = 0f
+    private lateinit var wifiDirect: WifiDirectService
+    private val WIFI_DIRECT_CHANNEL = "com.example.intercom_app/wifidirect"
+    private val WIFI_DIRECT_EVENTS = "com.example.intercom_app/wifidirect_events"
 
     // VOX
     private var voxEnabled = false
@@ -100,6 +105,35 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+            // WiFi Direct
+    wifiDirect = WifiDirectService(this, flutterEngine.dartExecutor.binaryMessenger
+        .let { MethodChannel(it, CHANNEL) })
+    wifiDirect.initialize()
+
+    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_CHANNEL)
+        .setMethodCallHandler { call, result ->
+            when (call.method) {
+                "discoverPeers" -> wifiDirect.discoverPeers(result)
+                "stopDiscovery" -> wifiDirect.stopDiscovery(result)
+                "connect" -> {
+                    val address = call.argument<String>("address") ?: ""
+                    wifiDirect.connect(address, result)
+                }
+                "disconnect" -> wifiDirect.disconnect(result)
+                else -> result.notImplemented()
+            }
+        }
+
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_EVENTS)
+        .setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                wifiDirect.setEventSink(sink)
+            }
+            override fun onCancel(args: Any?) {
+                wifiDirect.setEventSink(null)
+            }
+        })      
     }
 
     private fun isBluetoothHeadsetConnected(): Boolean {
@@ -226,23 +260,27 @@ class MainActivity : FlutterActivity() {
         audioManager?.isSpeakerphoneOn = false
     }
 
+    private val audioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     private fun playChunk(data: ByteArray) {
-        if (callVolume != 1.0f) {
-            val shorts = ShortArray(data.size / 2)
-            for (i in shorts.indices) {
-                val s = (data[i * 2].toInt() or (data[i * 2 + 1].toInt() shl 8)).toShort()
-                shorts[i] = (s * callVolume).toInt().coerceIn(-32768, 32767).toShort()
-            }
-            val scaled = ByteArray(data.size)
-            for (i in shorts.indices) {
-                scaled[i * 2] = (shorts[i].toInt() and 0xFF).toByte()
-                scaled[i * 2 + 1] = (shorts[i].toInt() shr 8).toByte()
-            }
+        audioExecutor.execute {
+            val scaled = if (callVolume != 1.0f) {
+                val shorts = ShortArray(data.size / 2)
+                for (i in shorts.indices) {
+                    val s = (data[i * 2].toInt() or (data[i * 2 + 1].toInt() shl 8)).toShort()
+                    shorts[i] = (s * callVolume).toInt().coerceIn(-32768, 32767).toShort()
+                }
+                ByteArray(data.size).also { out ->
+                    for (i in shorts.indices) {
+                        out[i * 2] = (shorts[i].toInt() and 0xFF).toByte()
+                        out[i * 2 + 1] = (shorts[i].toInt() shr 8).toByte()
+                    }
+                }
+            } else data
             audioTrack?.write(scaled, 0, scaled.size)
-        } else {
-            audioTrack?.write(data, 0, data.size)
         }
     }
+
 
     private fun stopAudioCall() {
 
@@ -261,5 +299,10 @@ class MainActivity : FlutterActivity() {
         audioTrack?.stop()
         audioTrack?.release()
         audioTrack = null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        wifiDirect.destroy()
     }
 }
