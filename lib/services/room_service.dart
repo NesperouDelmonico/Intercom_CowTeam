@@ -11,6 +11,7 @@ class RoomMember {
   bool isMuted;
   double volume;
   double speakingLevel;
+  String? avatarBase64;
 
   RoomMember({
     required this.name,
@@ -18,9 +19,8 @@ class RoomMember {
     this.isMuted = false,
     this.volume = 1.0,
     this.speakingLevel = 0.0,
+    this.avatarBase64,
   });
-
-  Device toDevice() => Device(name: name, ip: ip, port: RoomService.audioPort);
 }
 
 class RoomService {
@@ -49,19 +49,31 @@ class RoomService {
 
   String generateRoomCode() => (1000 + Random().nextInt(9000)).toString();
 
-  Future<void> createRoom(String myName, String myIp) async {
+  Future<void> createRoom(
+    String myName,
+    String myIp, {
+    String? avatarBase64,
+  }) async {
     _isHost = true;
     _myIp = myIp;
     _myName = myName;
-    _members[myIp] = RoomMember(name: myName, ip: myIp);
-
+    _members[myIp] = RoomMember(
+      name: myName,
+      ip: myIp,
+      avatarBase64: avatarBase64,
+    );
     await _bindSockets();
     _listenSignals();
     _listenAudio();
     _startAnnounce();
   }
 
-  Future<void> joinRoom(String myName, String myIp, String hostIp) async {
+  Future<void> joinRoom(
+    String myName,
+    String myIp,
+    String hostIp, {
+    String? avatarBase64,
+  }) async {
     _isHost = false;
     _myIp = myIp;
     _myName = myName;
@@ -71,10 +83,10 @@ class RoomService {
     _listenSignals();
     _listenAudio();
 
-    // Anunciarse al host
-    _sendSignal('JOIN:$myName:$myIp', hostIp);
+    // Anunciarse al host con avatar incluido
+    final avatarPart = avatarBase64 != null ? ':$avatarBase64' : '';
+    _sendSignal('JOIN:$myName:$myIp$avatarPart', hostIp);
 
-    // Heartbeat
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendSignal('HEARTBEAT:$myName:$myIp', hostIp);
     });
@@ -133,16 +145,28 @@ class RoomService {
 
   void _handleSignal(String msg, String fromIp) {
     if (msg.startsWith('JOIN:')) {
-      final parts = msg.split(':');
-      if (parts.length < 3) return;
-      final name = parts[1];
-      final ip = parts[2];
+      // Formato: JOIN:name:ip o JOIN:name:ip:avatarBase64
+      final firstColon = msg.indexOf(':');
+      final secondColon = msg.indexOf(':', firstColon + 1);
+      final thirdColon = msg.indexOf(':', secondColon + 1);
+
+      if (secondColon == -1) return;
+      final name = msg.substring(firstColon + 1, secondColon);
+      final ip = thirdColon == -1
+          ? msg.substring(secondColon + 1)
+          : msg.substring(secondColon + 1, thirdColon);
+      final avatarBase64 = thirdColon != -1
+          ? msg.substring(thirdColon + 1)
+          : null;
+
       if (_members.length < maxMembers && !_members.containsKey(ip)) {
-        _members[ip] = RoomMember(name: name, ip: ip);
+        _members[ip] = RoomMember(
+          name: name,
+          ip: ip,
+          avatarBase64: avatarBase64,
+        );
         onMembersChanged?.call(_members);
-        // Enviar lista actualizada a todos
         _broadcastMemberList();
-        // Enviar lista actual al recién unido
         _sendMemberListTo(ip);
       }
     } else if (msg.startsWith('LEAVE:')) {
@@ -177,25 +201,31 @@ class RoomService {
   void _parseMemberList(String raw) {
     if (raw.isEmpty) return;
     final currentIps = <String>{};
-    for (final entry in raw.split(',')) {
-      final p = entry.split(':');
+    for (final entry in raw.split('|')) {
+      final p = entry.split('§');
       if (p.length < 2) continue;
       final name = p[0];
       final ip = p[1];
+      final avatarBase64 = p.length > 2 && p[2].isNotEmpty ? p[2] : null;
       currentIps.add(ip);
       if (!_members.containsKey(ip)) {
-        _members[ip] = RoomMember(name: name, ip: ip);
+        _members[ip] = RoomMember(
+          name: name,
+          ip: ip,
+          avatarBase64: avatarBase64,
+        );
+      } else if (avatarBase64 != null) {
+        _members[ip]!.avatarBase64 = avatarBase64;
       }
     }
-    // Eliminar los que ya no están
     _members.removeWhere((ip, _) => !currentIps.contains(ip));
     onMembersChanged?.call(_members);
   }
 
   void _broadcastMemberList() {
     final payload = _members.entries
-        .map((e) => '${e.value.name}:${e.key}')
-        .join(',');
+        .map((e) => '${e.value.name}§${e.key}§${e.value.avatarBase64 ?? ''}')
+        .join('|');
     final msg = 'MEMBERS:$payload';
     for (final ip in _members.keys) {
       if (ip != _myIp) _sendSignal(msg, ip);
@@ -204,8 +234,8 @@ class RoomService {
 
   void _sendMemberListTo(String ip) {
     final payload = _members.entries
-        .map((e) => '${e.value.name}:${e.key}')
-        .join(',');
+        .map((e) => '${e.value.name}§${e.key}§${e.value.avatarBase64 ?? ''}')
+        .join('|');
     _sendSignal('MEMBERS:$payload', ip);
   }
 

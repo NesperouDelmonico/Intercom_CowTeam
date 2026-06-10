@@ -6,6 +6,8 @@ import 'package:intercom_app/providers/room_provider.dart';
 import 'package:intercom_app/screens/discovery_screen.dart';
 import 'package:intercom_app/models/device.dart';
 import 'package:flutter/services.dart';
+import 'package:intercom_app/services/room_service.dart';
+import 'dart:convert';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -219,8 +221,14 @@ class _ActiveRoom extends StatelessWidget {
               childAspectRatio: 0.85,
             ),
             itemCount: members.length,
-            itemBuilder: (context, i) =>
-                _MemberCard(member: members[i], notifier: notifier),
+            itemBuilder: (context, i) {
+              final member = members[i];
+              return _MemberCard(
+                member: member,
+                notifier: notifier,
+                avatarBase64: member.avatarBase64,
+              );
+            },
           ),
         ),
         _AudioSettingsPanel(),
@@ -233,173 +241,316 @@ class _ActiveRoom extends StatelessWidget {
 
 // ── Tarjeta de miembro (estilo Discord) ───────────────────
 class _MemberCard extends StatefulWidget {
-  final dynamic member;
+  final RoomMember member;
   final RoomNotifier notifier;
-  const _MemberCard({required this.member, required this.notifier});
+  final String? avatarBase64;
+
+  const _MemberCard({
+    required this.member,
+    required this.notifier,
+    this.avatarBase64,
+  });
 
   @override
   State<_MemberCard> createState() => _MemberCardState();
 }
 
 class _MemberCardState extends State<_MemberCard> {
-  bool _showVolume = false;
+  bool _menuOpen = false;
 
   @override
   Widget build(BuildContext context) {
     final m = widget.member;
+    final isSpeaking = m.speakingLevel > 0.08 && !m.isMuted;
     final initials = m.name.length >= 2
         ? m.name.substring(0, 2).toUpperCase()
         : m.name.toUpperCase();
-    final isSpeaking = m.speakingLevel > 0.1;
 
-    return Container(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 100),
       decoration: BoxDecoration(
         color: _card,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isSpeaking && !m.isMuted
-              ? _cyan.withOpacity(0.4 + m.speakingLevel * 0.6)
-              : _border,
-          width: isSpeaking && !m.isMuted ? 1.5 : 1,
+          color: isSpeaking ? _cyan : _border,
+          width: isSpeaking ? 1.5 : 1,
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(13),
+        child: Stack(
           children: [
-            // Avatar con anillo de voz
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 100),
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: _bg,
-                border: Border.all(
-                  color: m.isMuted
-                      ? _muted
-                      : isSpeaking
-                      ? _cyan
-                      : _border,
-                  width: isSpeaking && !m.isMuted ? 2.5 : 1.5,
-                ),
+            // Contenido principal — avatar centrado
+            Positioned.fill(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _bg,
+                      border: Border.all(
+                        color: m.isMuted ? _muted : _cyan,
+                        width: 2,
+                      ),
+                      image: m.avatarBase64 != null
+                          ? DecorationImage(
+                              image: MemoryImage(base64Decode(m.avatarBase64!)),
+                              fit: BoxFit.cover,
+                            )
+                          : null,
+                    ),
+                    child: m.avatarBase64 == null
+                        ? Center(
+                            child: Text(
+                              initials,
+                              style: const TextStyle(
+                                color: _cyan,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          )
+                        : null,
+                  ),
+                ],
               ),
-              child: Center(
-                child: Text(
-                  initials,
-                  style: const TextStyle(
-                    color: _cyan,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w500,
+            ),
+
+            // Badge nombre / silenciado abajo izquierda
+            Positioned(
+              bottom: 10,
+              left: 10,
+              child: m.isMuted
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFCC2222).withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.mic_off,
+                            color: Colors.white,
+                            size: 10,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            m.name.length > 10
+                                ? m.name.substring(0, 10)
+                                : m.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _bg.withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: _border),
+                      ),
+                      child: Text(
+                        m.name.length > 10 ? m.name.substring(0, 10) : m.name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+            ),
+
+            // Botón ··· arriba derecha
+            Positioned(
+              top: 8,
+              right: 8,
+              child: GestureDetector(
+                onTap: () => setState(() => _menuOpen = !_menuOpen),
+                child: Container(
+                  width: 28,
+                  height: 28,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _bg.withOpacity(0.7),
+                    border: Border.all(color: _border),
+                  ),
+                  child: const Center(
+                    child: Text(
+                      '···',
+                      style: TextStyle(
+                        color: _muted,
+                        fontSize: 12,
+                        letterSpacing: -1,
+                        height: 1,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 8),
-            // Nombre
-            Text(
-              m.name,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 4),
-            // Barra de nivel de voz
-            SizedBox(
-              height: 4,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(2),
+
+            // Barra de nivel de voz abajo
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 80),
+                height: 3,
                 child: LinearProgressIndicator(
                   value: m.isMuted ? 0 : m.speakingLevel,
                   backgroundColor: _border,
                   valueColor: AlwaysStoppedAnimation<Color>(
                     m.speakingLevel > 0.7 ? const Color(0xFFFF4444) : _cyan,
                   ),
+                  minHeight: 3,
                 ),
               ),
             ),
-            const Spacer(),
-            // Controles individuales
-            if (_showVolume)
-              Row(
-                children: [
-                  const Icon(Icons.volume_down, color: _muted, size: 14),
-                  Expanded(
-                    child: SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: 2,
-                        thumbShape: const RoundSliderThumbShape(
-                          enabledThumbRadius: 6,
-                        ),
-                        activeTrackColor: _cyan,
-                        inactiveTrackColor: _border,
-                        thumbColor: _cyan,
-                        overlayShape: SliderComponentShape.noOverlay,
-                      ),
-                      child: Slider(
-                        value: m.volume.clamp(0.0, 2.0),
-                        min: 0,
-                        max: 2,
-                        onChanged: (v) =>
-                            widget.notifier.setMemberVolume(m.ip, v),
-                      ),
-                    ),
+
+            // Menú overlay
+            if (_menuOpen)
+              Positioned.fill(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: _card.withOpacity(0.97),
+                    borderRadius: BorderRadius.circular(13),
                   ),
-                  const Icon(Icons.volume_up, color: _muted, size: 14),
-                ],
-              )
-            else
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  // Silenciar individualmente
-                  GestureDetector(
-                    onTap: () =>
-                        widget.notifier.setMemberMuted(m.ip, !m.isMuted),
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: m.isMuted
-                            ? const Color(0xFFCC2222).withOpacity(0.2)
-                            : _bg,
-                        border: Border.all(
-                          color: m.isMuted ? const Color(0xFFCC2222) : _border,
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Botón cerrar arriba derecha del menú
+                      Align(
+                        alignment: Alignment.topRight,
+                        child: GestureDetector(
+                          onTap: () => setState(() => _menuOpen = false),
+                          child: Container(
+                            width: 24,
+                            height: 24,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _bg,
+                              border: Border.all(color: _border),
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              color: _muted,
+                              size: 14,
+                            ),
+                          ),
                         ),
                       ),
-                      child: Icon(
-                        m.isMuted ? Icons.mic_off : Icons.mic_none,
-                        color: m.isMuted ? const Color(0xFFCC4444) : _muted,
-                        size: 16,
+                      const SizedBox(height: 8),
+                      // Toggle silenciar
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Silenciar para mí',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () => widget.notifier.setMemberMuted(
+                              m.ip,
+                              !m.isMuted,
+                            ),
+                            child: Container(
+                              width: 36,
+                              height: 20,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                color: m.isMuted
+                                    ? const Color(0xFFCC2222)
+                                    : _border,
+                              ),
+                              child: AnimatedAlign(
+                                duration: const Duration(milliseconds: 150),
+                                alignment: m.isMuted
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
+                                child: Container(
+                                  width: 16,
+                                  height: 16,
+                                  margin: const EdgeInsets.symmetric(
+                                    horizontal: 2,
+                                  ),
+                                  decoration: const BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ),
-                  // Toggle volumen
-                  GestureDetector(
-                    onTap: () => setState(() => _showVolume = !_showVolume),
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _showVolume ? _cyan.withOpacity(0.2) : _bg,
-                        border: Border.all(
-                          color: _showVolume ? _cyan : _border,
+                      const SizedBox(height: 12),
+                      Container(height: 0.5, color: _border),
+                      const SizedBox(height: 12),
+                      // Slider volumen
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Volumen',
+                          style: TextStyle(color: _muted, fontSize: 11),
                         ),
                       ),
-                      child: Icon(
-                        Icons.tune,
-                        color: _showVolume ? _cyan : _muted,
-                        size: 16,
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.volume_down,
+                            color: _muted,
+                            size: 14,
+                          ),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 2,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 6,
+                                ),
+                                activeTrackColor: _cyan,
+                                inactiveTrackColor: _border,
+                                thumbColor: _cyan,
+                                overlayShape: SliderComponentShape.noOverlay,
+                              ),
+                              child: Slider(
+                                value: m.volume.clamp(0.0, 2.0),
+                                min: 0,
+                                max: 2,
+                                onChanged: (v) =>
+                                    widget.notifier.setMemberVolume(m.ip, v),
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.volume_up, color: _muted, size: 14),
+                        ],
                       ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
           ],
         ),

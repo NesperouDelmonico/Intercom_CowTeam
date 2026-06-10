@@ -7,6 +7,9 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:intercom_app/services/audio_service.dart';
 import 'package:record/record.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 class RoomNotifier extends Notifier<RoomState> {
   final RoomService _room = RoomService();
@@ -44,7 +47,8 @@ class RoomNotifier extends Notifier<RoomState> {
       state = state.copyWith(members: Map.from(members));
     };
 
-    await _room.createRoom(_myName, _myIp);
+    final avatarBase64 = await _loadAvatarBase64();
+    await _room.createRoom(_myName, _myIp, avatarBase64: avatarBase64);
     _room.announceRoom(code);
 
     _room.onRoomQuery = (queryCode, fromIp) {
@@ -80,7 +84,8 @@ class RoomNotifier extends Notifier<RoomState> {
       state = state.copyWith(members: Map.from(members));
     };
 
-    await _room.joinRoom(_myName, _myIp, hostIp);
+    final avatarBase64 = await _loadAvatarBase64();
+    await _room.joinRoom(_myName, _myIp, hostIp, avatarBase64: avatarBase64);
     await _startAudioCapture();
 
     state = state.copyWith(
@@ -184,6 +189,19 @@ class RoomNotifier extends Notifier<RoomState> {
       if (!_audio.shouldTransmit(gained)) return;
       _room.sendAudio(Uint8List.fromList(gained));
     });
+  }
+
+  Future<String?> _loadAvatarBase64() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/avatar.jpg');
+      if (!file.existsSync()) return null;
+      final bytes = await file.readAsBytes();
+      final limited = bytes.length > 20000 ? bytes.sublist(0, 20000) : bytes;
+      return base64Encode(limited);
+    } catch (_) {
+      return null;
+    }
   }
 }
 
