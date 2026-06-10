@@ -250,10 +250,18 @@ class RoomService {
   void announceRoom(String code) {
     _announceTimer?.cancel();
     _announceTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      final msg = 'ROOM:$code:$_myIp';
       try {
+        // Broadcast WiFi normal
         _announceSocket?.send(
-          'ROOM:$code:$_myIp'.codeUnits,
+          msg.codeUnits,
           InternetAddress('255.255.255.255'),
+          announcePort,
+        );
+        // Broadcast subred WiFi Direct
+        _announceSocket?.send(
+          msg.codeUnits,
+          InternetAddress('192.168.49.255'),
           announcePort,
         );
       } catch (_) {}
@@ -304,10 +312,6 @@ class RoomService {
   static Future<String?> _findBySubnetScan(String code) async {
     try {
       final myIp = await NetworkInfo().getWifiIP();
-      if (myIp == null) return null;
-
-      final prefix = myIp.substring(0, myIp.lastIndexOf('.'));
-      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
 
       final completer = Completer<String?>();
       final receiveSocket = await RawDatagramSocket.bind(
@@ -327,24 +331,52 @@ class RoomService {
         }
       });
 
-      // Enviar ping a cada IP de la subred
-      for (int i = 1; i <= 254; i++) {
-        if (completer.isCompleted) break;
-        final targetIp = '$prefix.$i';
-        if (targetIp == myIp) continue;
-        try {
-          socket.send(
-            'ROOM_QUERY:$code'.codeUnits,
-            InternetAddress(targetIp),
-            signalPort,
-          );
-        } catch (_) {}
-        if (i % 20 == 0) {
-          await Future.delayed(const Duration(milliseconds: 30));
+      final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+
+      // Estrategia 1: IP fija del Group Owner WiFi Direct
+      final wifiDirectGoIp = '192.168.49.1';
+      socket.send(
+        'ROOM_QUERY:$code'.codeUnits,
+        InternetAddress(wifiDirectGoIp),
+        signalPort,
+      );
+
+      // Estrategia 2: subred WiFi normal si hay IP
+      if (myIp != null && !myIp.startsWith('192.168.49')) {
+        final prefix = myIp.substring(0, myIp.lastIndexOf('.'));
+        for (int i = 1; i <= 254; i++) {
+          if (completer.isCompleted) break;
+          final targetIp = '$prefix.$i';
+          if (targetIp == myIp) continue;
+          try {
+            socket.send(
+              'ROOM_QUERY:$code'.codeUnits,
+              InternetAddress(targetIp),
+              signalPort,
+            );
+          } catch (_) {}
+          if (i % 20 == 0) {
+            await Future.delayed(const Duration(milliseconds: 30));
+          }
         }
       }
 
-      Future.delayed(const Duration(seconds: 5), () {
+      // Estrategia 3: subred WiFi Direct (192.168.49.x)
+      if (!completer.isCompleted) {
+        for (int i = 1; i <= 10; i++) {
+          if (completer.isCompleted) break;
+          final targetIp = '192.168.49.$i';
+          try {
+            socket.send(
+              'ROOM_QUERY:$code'.codeUnits,
+              InternetAddress(targetIp),
+              signalPort,
+            );
+          } catch (_) {}
+        }
+      }
+
+      Future.delayed(const Duration(seconds: 8), () {
         if (!completer.isCompleted) completer.complete(null);
       });
 
