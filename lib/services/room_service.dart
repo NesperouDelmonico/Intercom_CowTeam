@@ -83,9 +83,12 @@ class RoomService {
     _listenSignals();
     _listenAudio();
 
-    // Anunciarse al host con avatar incluido
+    // Reintentar el JOIN hasta 5 veces
     final avatarPart = avatarBase64 != null ? ':$avatarBase64' : '';
-    _sendSignal('JOIN:$myName:$myIp$avatarPart', hostIp);
+    for (int i = 0; i < 5; i++) {
+      _sendSignal('JOIN:$myName:$myIp$avatarPart', hostIp);
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
 
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       _sendSignal('HEARTBEAT:$myName:$myIp', hostIp);

@@ -1,4 +1,7 @@
 import 'dart:typed_data';
+import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/room_state.dart';
@@ -6,10 +9,11 @@ import 'package:intercom_app/services/room_service.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:intercom_app/services/audio_service.dart';
+import 'package:intercom_app/services/wifi_direct_service.dart';
 import 'package:record/record.dart';
-import 'dart:convert';
-import 'dart:io';
 import 'package:path_provider/path_provider.dart';
+
+final _wifiDirect = WifiDirectService();
 
 class RoomNotifier extends Notifier<RoomState> {
   final RoomService _room = RoomService();
@@ -25,9 +29,49 @@ class RoomNotifier extends Notifier<RoomState> {
   }
 
   Future<void> _init() async {
-    _myIp = await NetworkInfo().getWifiIP() ?? '';
     final info = await DeviceInfoPlugin().androidInfo;
     _myName = info.model;
+    _myIp = await _getActiveIp();
+  }
+
+  Future<String> _getActiveIp() async {
+    for (int attempt = 0; attempt < 10; attempt++) {
+      try {
+        final interfaces = await NetworkInterface.list(
+          type: InternetAddressType.IPv4,
+          includeLinkLocal: false,
+        );
+        // Preferir IP WiFi Direct
+        for (final iface in interfaces) {
+          for (final addr in iface.addresses) {
+            if (!addr.isLoopback &&
+                addr.address != '0.0.0.0' &&
+                addr.address.startsWith('192.168.49.')) {
+              return addr.address;
+            }
+          }
+        }
+        // Usar primera IP válida
+        for (final iface in interfaces) {
+          for (final addr in iface.addresses) {
+            if (!addr.isLoopback && addr.address != '0.0.0.0') {
+              return addr.address;
+            }
+          }
+        }
+      } catch (_) {}
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+    return await NetworkInfo().getWifiIP() ?? '';
+  }
+
+  Future<bool> hasNetworkConnection() async {
+    try {
+      final ip = await NetworkInfo().getWifiIP();
+      return ip != null && ip.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> createRoom() async {
@@ -38,7 +82,6 @@ class RoomNotifier extends Notifier<RoomState> {
     _room.onAudioReceived = (data, fromIp) {
       final member = _room.members[fromIp];
       if (member == null || member.isMuted) return;
-      // Aplicar volumen individual
       final adjusted = _applyVolume(data, member.volume);
       _ch.invokeMethod('playChunk', {'data': adjusted});
     };
@@ -48,17 +91,21 @@ class RoomNotifier extends Notifier<RoomState> {
     };
 
     final avatarBase64 = await _loadAvatarBase64();
+
+    _wifiDirect.startListening();
+    try {
+      await _wifiDirect.createGroup();
+    } catch (_) {}
+
     await _room.createRoom(_myName, _myIp, avatarBase64: avatarBase64);
     _room.announceRoom(code);
 
     _room.onRoomQuery = (queryCode, fromIp) {
       if (queryCode == code) {
-        // Responder directamente al que pregunta
         _room.respondToQuery(fromIp, code);
       }
     };
 
-    // Capturar micrófono y enviar en mesh
     await _startAudioCapture();
 
     state = state.copyWith(
@@ -71,6 +118,13 @@ class RoomNotifier extends Notifier<RoomState> {
 
   Future<void> joinRoom(String hostIp) async {
     await _init();
+
+    // Esperar que la interfaz de red esté lista
+    await Future.delayed(const Duration(seconds: 2));
+
+    // Re-obtener IP por si cambió
+    _myIp = await _getActiveIp();
+
     await _ch.invokeMethod('startPlayback');
 
     _room.onAudioReceived = (data, fromIp) {
@@ -96,9 +150,62 @@ class RoomNotifier extends Notifier<RoomState> {
   }
 
   Future<void> joinRoomByCode(String code) async {
-    final hostIp = await RoomService.findRoomHost(code);
-    if (hostIp == null) return;
-    await joinRoom(hostIp);
+    // Estrategia 1: red WiFi normal
+    var hostIp = await RoomService.findRoomHost(code);
+    if (hostIp != null) {
+      await joinRoom(hostIp);
+      return;
+    }
+    // Estrategia 2: subred WiFi Direct
+    await searchAndJoinViaWifiDirect(code);
+  }
+
+  Future<bool> searchAndJoinViaWifiDirect(String code) async {
+    final completer = Completer<String?>();
+    try {
+      final receiveSocket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        RoomService.announcePort,
+        reuseAddress: true,
+      );
+
+      receiveSocket.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = receiveSocket.receive();
+          if (dg == null) return;
+          final msg = String.fromCharCodes(dg.data);
+          if (msg.startsWith('ROOM:$code:') && !completer.isCompleted) {
+            completer.complete(msg.split(':')[2]);
+          }
+        }
+      });
+
+      final querySocket = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        0,
+      );
+      for (int i = 1; i <= 10; i++) {
+        querySocket.send(
+          'ROOM_QUERY:$code'.codeUnits,
+          InternetAddress('192.168.49.$i'),
+          RoomService.signalPort,
+        );
+      }
+
+      Future.delayed(const Duration(seconds: 5), () {
+        if (!completer.isCompleted) completer.complete(null);
+      });
+
+      final hostIp = await completer.future;
+      querySocket.close();
+      receiveSocket.close();
+
+      if (hostIp == null) return false;
+      await joinRoom(hostIp);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _startAudioCapture() async {
@@ -118,13 +225,8 @@ class RoomNotifier extends Notifier<RoomState> {
 
     stream.listen((chunk) {
       if (state.globalMuted) return;
-
-      // Aplicar ganancia
       final gained = _audio.applyGain(chunk, _audio.micGain);
-
-      // Aplicar VOX
       if (!_audio.shouldTransmit(gained)) return;
-
       _room.sendAudio(Uint8List.fromList(gained));
     });
   }
@@ -140,6 +242,20 @@ class RoomNotifier extends Notifier<RoomState> {
       result[i + 1] = (adjusted >> 8) & 0xFF;
     }
     return result;
+  }
+
+  Future<String?> _loadAvatarBase64() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/avatar.jpg');
+      if (!file.existsSync()) return null;
+      final bytes = await file.readAsBytes();
+      // Solo enviar si es menor a 30KB — si es mayor, no enviar avatar
+      if (bytes.length > 30000) return null;
+      return base64Encode(bytes);
+    } catch (_) {
+      return null;
+    }
   }
 
   void setMemberMuted(String ip, bool muted) {
@@ -171,7 +287,6 @@ class RoomNotifier extends Notifier<RoomState> {
   }
 
   Future<void> setNoiseLevel(int level) async {
-    // Reiniciar el stream con nueva configuración de ruido
     await _audio.recorder.stop();
     final stream = await _audio.recorder.startStream(
       RecordConfig(
@@ -189,19 +304,6 @@ class RoomNotifier extends Notifier<RoomState> {
       if (!_audio.shouldTransmit(gained)) return;
       _room.sendAudio(Uint8List.fromList(gained));
     });
-  }
-
-  Future<String?> _loadAvatarBase64() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/avatar.jpg');
-      if (!file.existsSync()) return null;
-      final bytes = await file.readAsBytes();
-      final limited = bytes.length > 20000 ? bytes.sublist(0, 20000) : bytes;
-      return base64Encode(limited);
-    } catch (_) {
-      return null;
-    }
   }
 }
 

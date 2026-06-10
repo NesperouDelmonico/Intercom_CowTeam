@@ -65,9 +65,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final picker = ImagePicker();
     final picked = await picker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 256,
-      maxHeight: 256,
-      imageQuality: 85,
+      maxWidth: 100,
+      maxHeight: 100,
+      imageQuality: 60,
     );
     if (picked == null) return;
     final dir = await getApplicationDocumentsDirectory();

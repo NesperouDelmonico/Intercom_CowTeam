@@ -27,58 +27,68 @@ class WifiDirectService(
     private var groupOwnerAddress = ""
 
     private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context, intent: Intent) {
-            when (intent.action) {
-                WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                    val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-                    if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
-                        sendEvent("wifiDirectDisabled", null)
-                    }
-                }
-                WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-                    manager.requestPeers(channel) { peerList ->
-                        peers.clear()
-                        peers.addAll(peerList.deviceList)
-                        val list = peers.map {
-                            mapOf(
-                                "name" to it.deviceName,
-                                "address" to it.deviceAddress,
-                                "status" to it.status
-                            )
-                        }
-                        sendEvent("peersChanged", list)
-                    }
-                }
-                WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                    @Suppress("DEPRECATION")
-                    val networkInfo: android.net.NetworkInfo? =
-                        intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
 
-                    if (networkInfo?.isConnected == true) {
-                        manager.requestConnectionInfo(channel) { info ->
-                            isGroupOwner = info.isGroupOwner
-                            groupOwnerAddress = info.groupOwnerAddress?.hostAddress ?: ""
-                            sendEvent(
-                                "connected", mapOf(
-                                    "isGroupOwner" to isGroupOwner,
-                                    "groupOwnerAddress" to groupOwnerAddress
-                                )
-                            )
-                        }
-                    } else {
-                        sendEvent("disconnected", null)
-                    }
-                }
-                WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                    @Suppress("DEPRECATION")
-                    val device: WifiP2pDevice? =
-                        intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
-                    device?.let {
-                        sendEvent("thisDeviceChanged", mapOf("name" to it.deviceName))
-                    }
-                }
+        override fun onReceive(ctx: Context, intent: Intent) {
+    android.util.Log.d("WifiDirect", "Action received: ${intent.action}")
+    when (intent.action) {
+        WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
+            val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
+            android.util.Log.d("WifiDirect", "P2P state: $state (2=enabled)")
+            if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
+                sendEvent("wifiDirectDisabled", null)
             }
         }
+        WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
+            android.util.Log.d("WifiDirect", "Peers changed — requesting peer list")
+            manager.requestPeers(channel) { peerList ->
+                android.util.Log.d("WifiDirect", "Peers found: ${peerList.deviceList.size}")
+                peers.clear()
+                peers.addAll(peerList.deviceList)
+                val list = peers.map {
+                    android.util.Log.d("WifiDirect", "Peer: ${it.deviceName} addr=${it.deviceAddress} status=${it.status}")
+                    mapOf(
+                        "name" to it.deviceName,
+                        "address" to it.deviceAddress,
+                        "status" to it.status
+                    )
+                }
+                sendEvent("peersChanged", list)
+            }
+        }
+        WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+            android.util.Log.d("WifiDirect", "Connection changed")
+            @Suppress("DEPRECATION")
+            val networkInfo: android.net.NetworkInfo? =
+                intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
+            android.util.Log.d("WifiDirect", "Network connected: ${networkInfo?.isConnected}")
+
+            if (networkInfo?.isConnected == true) {
+                manager.requestConnectionInfo(channel) { info ->
+                    android.util.Log.d("WifiDirect", "isGroupOwner: ${info.isGroupOwner} ownerAddr: ${info.groupOwnerAddress?.hostAddress}")
+                    isGroupOwner = info.isGroupOwner
+                    groupOwnerAddress = info.groupOwnerAddress?.hostAddress ?: ""
+                    sendEvent(
+                        "connected", mapOf(
+                            "isGroupOwner" to isGroupOwner,
+                            "groupOwnerAddress" to groupOwnerAddress
+                        )
+                    )
+                }
+            } else {
+                sendEvent("disconnected", null)
+            }
+        }
+        WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+            @Suppress("DEPRECATION")
+            val device: WifiP2pDevice? =
+                intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+            android.util.Log.d("WifiDirect", "This device changed: ${device?.deviceName}")
+            device?.let {
+                sendEvent("thisDeviceChanged", mapOf("name" to it.deviceName))
+            }
+        }
+    }
+}
     }
 
     fun initialize() {
@@ -143,4 +153,35 @@ class WifiDirectService(
         } catch (_: Exception) {}
         manager.removeGroup(channel, null)
     }
+
+    fun createGroup(result: MethodChannel.Result) {
+    manager.createGroup(channel, object : ActionListener {
+        override fun onSuccess() { result.success(null) }
+        override fun onFailure(reason: Int) {
+            result.error("CREATE_GROUP_FAILED", "Error: $reason", null)
+        }
+    })
+}
+
+fun removeGroup(result: MethodChannel.Result) {
+    manager.removeGroup(channel, object : ActionListener {
+        override fun onSuccess() { result.success(null) }
+        override fun onFailure(reason: Int) { result.success(null) }
+    })
+}
+
+fun requestGroupInfo(result: MethodChannel.Result) {
+    manager.requestGroupInfo(channel) { group ->
+        if (group == null) {
+            result.success(null)
+            return@requestGroupInfo
+        }
+        result.success(mapOf(
+            "networkName" to group.networkName,
+            "passphrase" to group.passphrase,
+            "isGroupOwner" to true,
+            "ownerAddress" to "192.168.49.1"
+        ))
+    }
+}
 }

@@ -16,7 +16,8 @@ const _border = Color(0xFF1A3A5C);
 const _muted = Color(0xFF445566);
 
 class DiscoveryScreen extends ConsumerStatefulWidget {
-  const DiscoveryScreen({super.key});
+  final bool forGroupCall;
+  const DiscoveryScreen({super.key, this.forGroupCall = false});
 
   @override
   ConsumerState<DiscoveryScreen> createState() => _DiscoveryScreenState();
@@ -49,36 +50,25 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
     };
 
     _wifiDirect.onConnected = (info) async {
-      final settings = ref.read(settingsProvider).value;
-      final name = settings?.deviceName ?? 'Dispositivo';
+      final remoteIp = info.isGroupOwner
+          ? await _waitForClientIp()
+          : info.groupOwnerAddress;
 
-      String remoteIp;
-      if (info.isGroupOwner) {
-        // Soy el Group Owner — el cliente se conectará a mí en 192.168.49.1
-        // Espero que el cliente me envíe su IP por UDP
-        remoteIp = await _waitForClientIp();
-      } else {
-        remoteIp = info.groupOwnerAddress;
+      final device = Device(
+        name: info.isGroupOwner ? 'Dispositivo' : 'Host',
+        ip: info.isGroupOwner ? '192.168.49.1' : remoteIp,
+        port: 5555,
+      );
 
-        // Anunciarse al Group Owner
-        final announceSocket = await RawDatagramSocket.bind(
-          InternetAddress.anyIPv4,
-          0,
-        );
-        for (int i = 0; i < 5; i++) {
-          announceSocket.send(
-            'HELLO:client'.codeUnits,
-            InternetAddress(remoteIp),
-            5558,
-          );
-          await Future.delayed(const Duration(milliseconds: 200));
+      if (context.mounted) {
+        if (widget.forGroupCall) {
+          // Vino desde sala grupal — unirse a sala, no llamada 1:1
+          Navigator.pop(context, device);
+        } else {
+          // Vino desde home — llamada 1:1
+          Navigator.pop(context, device);
         }
-        announceSocket.close();
       }
-
-      final device = Device(name: name, ip: remoteIp, port: 5555);
-
-      if (context.mounted) Navigator.pop(context, device);
     };
   }
 

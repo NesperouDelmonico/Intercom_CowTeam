@@ -86,4 +86,16 @@ class WifiDirectService {
   void dispose() {
     _eventSub?.cancel();
   }
+
+  Future<void> createGroup() async {
+    await _method.invokeMethod('createGroup');
+  }
+
+  Future<void> removeGroup() async {
+    await _method.invokeMethod('removeGroup');
+  }
+
+  Future<Map?> requestGroupInfo() async {
+    return await _method.invokeMethod<Map>('requestGroupInfo');
+  }
 }

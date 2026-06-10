@@ -63,6 +63,14 @@ class CallNotifier extends Notifier<CallState> {
     await _audio.stopCall();
     state = const CallState();
   }
+
+  Future<void> startCallDirect(Device device) async {
+    // Llamada directa sin señalización — para WiFi Direct
+    state = state.copyWith(status: CallStatus.connecting, remoteDevice: device);
+    await _network.start();
+    await _audio.startCall(remoteIp: device.ip, remotePort: device.port);
+    state = state.copyWith(status: CallStatus.active);
+  }
 }
 
 final callProvider = NotifierProvider<CallNotifier, CallState>(

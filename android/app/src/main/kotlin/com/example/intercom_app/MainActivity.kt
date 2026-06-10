@@ -102,6 +102,11 @@ class MainActivity : FlutterActivity() {
                     "getAudioLevel" -> {
                         result.success(currentAudioLevel.toDouble())
                     }
+                    "openHotspotSettings" -> {
+                        val intent = Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+                        startActivity(intent)
+                        result.success(null)
+                    }   
                     else -> result.notImplemented()
                 }
             }
@@ -121,6 +126,9 @@ class MainActivity : FlutterActivity() {
                     wifiDirect.connect(address, result)
                 }
                 "disconnect" -> wifiDirect.disconnect(result)
+                "createGroup" -> wifiDirect.createGroup(result)
+                "removeGroup" -> wifiDirect.removeGroup(result)
+                "requestGroupInfo" -> wifiDirect.requestGroupInfo(result)
                 else -> result.notImplemented()
             }
         }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/room_state.dart';
@@ -87,7 +88,6 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
         ),
         actions: isActive
             ? [
-                // Mute global
                 IconButton(
                   icon: Icon(
                     room.globalMuted ? Icons.mic_off : Icons.mic_none,
@@ -95,7 +95,6 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
                   ),
                   onPressed: notifier.toggleGlobalMute,
                 ),
-                // Timer
                 Padding(
                   padding: const EdgeInsets.only(right: 12),
                   child: Center(
@@ -120,9 +119,24 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
 }
 
 // ── Sala inactiva ──────────────────────────────────────────
-class _IdleRoom extends StatelessWidget {
+class _IdleRoom extends ConsumerStatefulWidget {
   final RoomNotifier notifier;
   const _IdleRoom({required this.notifier});
+
+  @override
+  ConsumerState<_IdleRoom> createState() => _IdleRoomState();
+}
+
+class _IdleRoomState extends ConsumerState<_IdleRoom> {
+  bool _searching = false;
+  String _status = '';
+  final _codeController = TextEditingController();
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -131,43 +145,110 @@ class _IdleRoom extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Info card
           Container(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: _card,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(color: _border),
             ),
             child: const Row(
               children: [
-                Icon(Icons.group_outlined, color: _muted, size: 20),
-                SizedBox(width: 12),
+                Icon(Icons.info_outline, color: _muted, size: 14),
+                SizedBox(width: 8),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Sin sala activa',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      SizedBox(height: 2),
-                      Text(
-                        'Crea o únete a una sala',
-                        style: TextStyle(color: _muted, fontSize: 11),
-                      ),
-                    ],
+                  child: Text(
+                    'Sin router: el creador activa su Hotspot, los demás se conectan a él y luego ingresan el código.',
+                    style: TextStyle(color: _muted, fontSize: 10),
                   ),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 16),
+
+          // Crear sala
           ElevatedButton.icon(
-            onPressed: notifier.createRoom,
+            onPressed: () async {
+              final hasNetwork = await widget.notifier.hasNetworkConnection();
+              if (!hasNetwork && context.mounted) {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (ctx) => AlertDialog(
+                    backgroundColor: _card,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: const BorderSide(color: _border),
+                    ),
+                    title: const Row(
+                      children: [
+                        Icon(Icons.wifi_tethering, color: _cyan, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'Sin red WiFi',
+                          style: TextStyle(color: Colors.white, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                    content: const Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Para conectar sin router activa tu Hotspot personal.',
+                          style: TextStyle(color: _muted, fontSize: 13),
+                        ),
+                        SizedBox(height: 12),
+                        Text(
+                          'Pasos:',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        SizedBox(height: 6),
+                        Text(
+                          '1. Activa tu Hotspot personal',
+                          style: TextStyle(color: _muted, fontSize: 12),
+                        ),
+                        Text(
+                          '2. Los demás se conectan a tu hotspot',
+                          style: TextStyle(color: _muted, fontSize: 12),
+                        ),
+                        Text(
+                          '3. Vuelve y crea la sala',
+                          style: TextStyle(color: _muted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text(
+                          'Cancelar',
+                          style: TextStyle(color: _muted),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(ctx, true);
+                          const MethodChannel(
+                            'com.example.intercom_app/audio',
+                          ).invokeMethod('openHotspotSettings');
+                        },
+                        icon: const Icon(Icons.settings, size: 16),
+                        label: const Text('Abrir Hotspot'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed != true) return;
+              }
+              widget.notifier.createRoom();
+            },
             icon: const Icon(Icons.add),
             label: const Text('Crear sala'),
             style: ElevatedButton.styleFrom(
@@ -175,18 +256,141 @@ class _IdleRoom extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
+
+          // Unirse por código
+          Container(
+            decoration: BoxDecoration(
+              color: _card,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: _border),
+            ),
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.tag, color: _cyan, size: 16),
+                    SizedBox(width: 8),
+                    Text(
+                      'Unirse por código',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'WiFi normal o Hotspot del host',
+                  style: TextStyle(color: _muted, fontSize: 10),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _codeController,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: 'Código de 4 dígitos',
+                          hintStyle: const TextStyle(color: _muted),
+                          filled: true,
+                          fillColor: _bg,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: const BorderSide(color: _border),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: const BorderSide(color: _border),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _searching
+                        ? const SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: CircularProgressIndicator(
+                              color: _cyan,
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : ElevatedButton(
+                            onPressed: () async {
+                              final code = _codeController.text.trim();
+                              if (code.isEmpty) {
+                                setState(() => _status = 'Ingresa el código');
+                                return;
+                              }
+                              setState(() {
+                                _searching = true;
+                                _status = 'Buscando sala...';
+                              });
+
+                              await widget.notifier.joinRoomByCode(code);
+
+                              if (mounted) {
+                                final room = ref.read(roomProvider);
+                                setState(() {
+                                  _searching = false;
+                                  _status = room.status == RoomStatus.idle
+                                      ? 'No se encontró la sala'
+                                      : '';
+                                });
+                              }
+                            },
+                            child: const Text('Entrar'),
+                          ),
+                  ],
+                ),
+                if (_status.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _status,
+                    style: TextStyle(
+                      color: _status.contains('No se encontró')
+                          ? const Color(0xFFCC4444)
+                          : _muted,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Buscar via WiFi Direct
           OutlinedButton.icon(
             onPressed: () async {
-              final device = await Navigator.push<Device>(
+              final device = await Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const DiscoveryScreen()),
+                MaterialPageRoute(
+                  builder: (_) => const DiscoveryScreen(forGroupCall: true),
+                ),
               );
-              if (device != null) {
-                notifier.joinRoom(device.ip);
+              if (device != null && context.mounted) {
+                widget.notifier.joinRoom((device as Device).ip);
               }
             },
-            icon: const Icon(Icons.search, color: _cyan),
-            label: const Text('Buscar sala', style: TextStyle(color: _cyan)),
+            icon: const Icon(Icons.wifi_tethering, color: _cyan),
+            label: const Text(
+              'Buscar via WiFi Direct',
+              style: TextStyle(color: _cyan),
+            ),
             style: OutlinedButton.styleFrom(
               side: const BorderSide(color: _cyan),
               shape: const StadiumBorder(),
@@ -208,7 +412,6 @@ class _ActiveRoom extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final members = room.members.values.toList();
-
     return Column(
       children: [
         Expanded(
@@ -231,15 +434,14 @@ class _ActiveRoom extends StatelessWidget {
             },
           ),
         ),
-        _AudioSettingsPanel(),
-        // Controles globales
+        const _AudioSettingsPanel(),
         _GlobalControls(room: room, notifier: notifier),
       ],
     );
   }
 }
 
-// ── Tarjeta de miembro (estilo Discord) ───────────────────
+// ── Tarjeta de miembro ─────────────────────────────────────
 class _MemberCard extends StatefulWidget {
   final RoomMember member;
   final RoomNotifier notifier;
@@ -257,6 +459,33 @@ class _MemberCard extends StatefulWidget {
 
 class _MemberCardState extends State<_MemberCard> {
   bool _menuOpen = false;
+  Uint8List? _cachedAvatar;
+
+  @override
+  void initState() {
+    super.initState();
+    _decodeAvatar();
+  }
+
+  @override
+  void didUpdateWidget(_MemberCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.avatarBase64 != widget.avatarBase64) {
+      _decodeAvatar();
+    }
+  }
+
+  void _decodeAvatar() {
+    if (widget.avatarBase64 != null) {
+      try {
+        _cachedAvatar = base64Decode(widget.avatarBase64!);
+      } catch (_) {
+        _cachedAvatar = null;
+      }
+    } else {
+      _cachedAvatar = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -280,7 +509,6 @@ class _MemberCardState extends State<_MemberCard> {
         borderRadius: BorderRadius.circular(13),
         child: Stack(
           children: [
-            // Contenido principal — avatar centrado
             Positioned.fill(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -295,14 +523,14 @@ class _MemberCardState extends State<_MemberCard> {
                         color: m.isMuted ? _muted : _cyan,
                         width: 2,
                       ),
-                      image: m.avatarBase64 != null
+                      image: _cachedAvatar != null
                           ? DecorationImage(
-                              image: MemoryImage(base64Decode(m.avatarBase64!)),
+                              image: MemoryImage(_cachedAvatar!),
                               fit: BoxFit.cover,
                             )
                           : null,
                     ),
-                    child: m.avatarBase64 == null
+                    child: _cachedAvatar == null
                         ? Center(
                             child: Text(
                               initials,
@@ -318,8 +546,6 @@ class _MemberCardState extends State<_MemberCard> {
                 ],
               ),
             ),
-
-            // Badge nombre / silenciado abajo izquierda
             Positioned(
               bottom: 10,
               left: 10,
@@ -375,8 +601,6 @@ class _MemberCardState extends State<_MemberCard> {
                       ),
                     ),
             ),
-
-            // Botón ··· arriba derecha
             Positioned(
               top: 8,
               right: 8,
@@ -404,8 +628,6 @@ class _MemberCardState extends State<_MemberCard> {
                 ),
               ),
             ),
-
-            // Barra de nivel de voz abajo
             Positioned(
               bottom: 0,
               left: 0,
@@ -423,8 +645,6 @@ class _MemberCardState extends State<_MemberCard> {
                 ),
               ),
             ),
-
-            // Menú overlay
             if (_menuOpen)
               Positioned.fill(
                 child: Container(
@@ -436,7 +656,6 @@ class _MemberCardState extends State<_MemberCard> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Botón cerrar arriba derecha del menú
                       Align(
                         alignment: Alignment.topRight,
                         child: GestureDetector(
@@ -458,7 +677,6 @@ class _MemberCardState extends State<_MemberCard> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      // Toggle silenciar
                       Row(
                         children: [
                           const Expanded(
@@ -508,7 +726,6 @@ class _MemberCardState extends State<_MemberCard> {
                       const SizedBox(height: 12),
                       Container(height: 0.5, color: _border),
                       const SizedBox(height: 12),
-                      // Slider volumen
                       const Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
@@ -572,7 +789,6 @@ class _GlobalControls extends StatefulWidget {
 class _GlobalControlsState extends State<_GlobalControls> {
   bool _isBluetooth = false;
   bool _isSpeaker = true;
-
   static const _ch = MethodChannel('com.example.intercom_app/audio');
 
   @override
@@ -756,7 +972,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
   bool _voxEnabled = false;
   double _voxThreshold = 500;
   double _micGain = 1.0;
-  int _noiseLevel = 1; // 0=bajo, 1=medio, 2=alto
+  int _noiseLevel = 1;
   bool _expanded = false;
 
   @override
@@ -770,7 +986,6 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
       ),
       child: Column(
         children: [
-          // Header
           InkWell(
             onTap: () => setState(() => _expanded = !_expanded),
             borderRadius: BorderRadius.circular(16),
@@ -801,7 +1016,6 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
               ),
             ),
           ),
-
           if (_expanded)
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
@@ -810,8 +1024,6 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                 children: [
                   Container(height: 0.5, color: _border),
                   const SizedBox(height: 12),
-
-                  // VOX
                   Row(
                     children: [
                       const Icon(Icons.sensors, color: _cyan, size: 16),
@@ -871,7 +1083,6 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                       ),
                     ],
                   ),
-
                   if (_voxEnabled) ...[
                     const SizedBox(height: 10),
                     Row(
@@ -902,12 +1113,9 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                       ),
                     ),
                   ],
-
                   const SizedBox(height: 12),
                   Container(height: 0.5, color: _border),
                   const SizedBox(height: 12),
-
-                  // Ganancia del micrófono
                   Row(
                     children: [
                       const Icon(Icons.mic, color: _cyan, size: 16),
@@ -936,17 +1144,14 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                       },
                     ),
                   ),
-
                   const SizedBox(height: 12),
                   Container(height: 0.5, color: _border),
                   const SizedBox(height: 12),
-
-                  // Reducción de ruido
-                  Row(
+                  const Row(
                     children: [
-                      const Icon(Icons.noise_aware, color: _cyan, size: 16),
-                      const SizedBox(width: 8),
-                      const Text(
+                      Icon(Icons.noise_aware, color: _cyan, size: 16),
+                      SizedBox(width: 8),
+                      Text(
                         'Reducción de ruido',
                         style: TextStyle(color: Colors.white, fontSize: 13),
                       ),
