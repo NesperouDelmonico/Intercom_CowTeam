@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/device.dart';
-import 'package:intercom_app/providers/call_provider.dart';
 import 'package:intercom_app/providers/settings_provider.dart';
 import 'package:intercom_app/services/wifi_direct_service.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -50,25 +49,40 @@ class _DiscoveryScreenState extends ConsumerState<DiscoveryScreen>
     };
 
     _wifiDirect.onConnected = (info) async {
-      final remoteIp = info.isGroupOwner
-          ? await _waitForClientIp()
-          : info.groupOwnerAddress;
+      // Calcular IP remota primero
+      String remoteIp;
+      if (info.isGroupOwner) {
+        remoteIp = await _waitForClientIp();
+      } else {
+        remoteIp = info.groupOwnerAddress;
+        // Anunciarse al GO
+        final announceSocket = await RawDatagramSocket.bind(
+          InternetAddress.anyIPv4,
+          0,
+        );
+        for (int i = 0; i < 5; i++) {
+          announceSocket.send(
+            'HELLO:client'.codeUnits,
+            InternetAddress(remoteIp),
+            5558,
+          );
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+        announceSocket.close();
+      }
+
+      // Nombre del peer
+      final peerName = _peers.isNotEmpty
+          ? _peers.first.name
+          : (info.isGroupOwner ? 'Dispositivo' : 'Host');
 
       final device = Device(
-        name: info.isGroupOwner ? 'Dispositivo' : 'Host',
+        name: peerName,
         ip: info.isGroupOwner ? '192.168.49.1' : remoteIp,
         port: 5555,
       );
 
-      if (context.mounted) {
-        if (widget.forGroupCall) {
-          // Vino desde sala grupal — unirse a sala, no llamada 1:1
-          Navigator.pop(context, device);
-        } else {
-          // Vino desde home — llamada 1:1
-          Navigator.pop(context, device);
-        }
-      }
+      if (context.mounted) Navigator.pop(context, device);
     };
   }
 

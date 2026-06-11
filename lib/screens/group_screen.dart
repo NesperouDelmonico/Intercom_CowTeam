@@ -9,6 +9,7 @@ import 'package:intercom_app/models/device.dart';
 import 'package:flutter/services.dart';
 import 'package:intercom_app/services/room_service.dart';
 import 'dart:convert';
+import 'package:intercom_app/models/room_info.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -26,12 +27,35 @@ class GroupScreen extends ConsumerStatefulWidget {
 class _GroupScreenState extends ConsumerState<GroupScreen> {
   Duration _elapsed = Duration.zero;
   Timer? _timer;
+  final List<String> _notifications = [];
 
   @override
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _elapsed += const Duration(seconds: 1));
+    });
+
+    // Escuchar eventos de miembros
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(roomProvider.notifier).setMemberEventCallback((name, joined) {
+        if (mounted) {
+          setState(() {
+            _notifications.add(
+              joined ? '$name se unió' : '$name se desconectó',
+            );
+          });
+          // Auto-eliminar después de 3 segundos
+          Future.delayed(const Duration(seconds: 3), () {
+            if (mounted)
+              setState(
+                () => _notifications.remove(
+                  joined ? '$name se unió' : '$name se desconectó',
+                ),
+              );
+          });
+        }
+      });
     });
   }
 
@@ -111,9 +135,45 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
           child: Container(height: 0.5, color: _border),
         ),
       ),
-      body: isActive
-          ? _ActiveRoom(room: room, notifier: notifier)
-          : _IdleRoom(notifier: notifier),
+      body: Stack(
+        children: [
+          isActive
+              ? _ActiveRoom(room: room, notifier: notifier)
+              : _IdleRoom(notifier: notifier),
+          // Notificaciones flotantes
+          if (_notifications.isNotEmpty)
+            Positioned(
+              top: 8,
+              left: 16,
+              right: 16,
+              child: Column(
+                children: _notifications
+                    .map(
+                      (msg) => Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _card.withOpacity(0.95),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: _border),
+                        ),
+                        child: Text(
+                          msg,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -374,29 +434,7 @@ class _IdleRoomState extends ConsumerState<_IdleRoom> {
           const SizedBox(height: 12),
 
           // Buscar via WiFi Direct
-          OutlinedButton.icon(
-            onPressed: () async {
-              final device = await Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const DiscoveryScreen(forGroupCall: true),
-                ),
-              );
-              if (device != null && context.mounted) {
-                widget.notifier.joinRoom((device as Device).ip);
-              }
-            },
-            icon: const Icon(Icons.wifi_tethering, color: _cyan),
-            label: const Text(
-              'Buscar via WiFi Direct',
-              style: TextStyle(color: _cyan),
-            ),
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: _cyan),
-              shape: const StadiumBorder(),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-            ),
-          ),
+          _RoomDiscovery(notifier: widget.notifier),
         ],
       ),
     );
@@ -1239,6 +1277,132 @@ class _NoiseBtn extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _RoomDiscovery extends StatefulWidget {
+  final RoomNotifier notifier;
+  const _RoomDiscovery({required this.notifier});
+
+  @override
+  State<_RoomDiscovery> createState() => _RoomDiscoveryState();
+}
+
+class _RoomDiscoveryState extends State<_RoomDiscovery> {
+  bool _searching = false;
+  List<RoomInfo> _rooms = [];
+  String _status = '';
+
+  Future<void> _search() async {
+    setState(() {
+      _searching = true;
+      _rooms = [];
+      _status = 'Buscando salas activas...';
+    });
+
+    final rooms = await widget.notifier.discoverRooms();
+
+    if (mounted) {
+      setState(() {
+        _searching = false;
+        _rooms = rooms;
+        _status = rooms.isEmpty
+            ? 'No se encontraron salas activas'
+            : '${rooms.length} sala(s) encontrada(s)';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _searching ? null : _search,
+          icon: _searching
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    color: _cyan,
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Icon(Icons.search, color: _cyan),
+          label: Text(
+            _searching ? 'Buscando...' : 'Buscar salas activas',
+            style: const TextStyle(color: _cyan),
+          ),
+          style: OutlinedButton.styleFrom(
+            side: const BorderSide(color: _cyan),
+            shape: const StadiumBorder(),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+        ),
+        if (_status.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(
+            _status,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _muted, fontSize: 11),
+          ),
+        ],
+        if (_rooms.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          ..._rooms.map(
+            (room) => _RoomCard(
+              room: room,
+              onJoin: () async {
+                await widget.notifier.joinRoom(room.hostIp);
+              },
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _RoomCard extends StatelessWidget {
+  final RoomInfo room;
+  final VoidCallback onJoin;
+
+  const _RoomCard({required this.room, required this.onJoin});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _border),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.meeting_room, color: _cyan),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Sala de ${room.hostName} (${room.hostIp})',
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: onJoin,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _cyan,
+              foregroundColor: const Color(0xFF001830),
+              shape: const StadiumBorder(),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            ),
+            child: const Text('Unirse'),
+          ),
+        ],
       ),
     );
   }

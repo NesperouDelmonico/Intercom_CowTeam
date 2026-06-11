@@ -1,16 +1,10 @@
-import 'package:flutter/material.dart';
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:intercom_app/models/call_state.dart';
-import 'package:intercom_app/models/device.dart';
-import 'package:intercom_app/providers/call_provider.dart';
-import 'package:intercom_app/screens/call_screen.dart';
+import 'package:intercom_app/providers/settings_provider.dart';
 import 'package:intercom_app/screens/discovery_screen.dart';
 import 'package:intercom_app/screens/group_screen.dart';
 import 'package:intercom_app/screens/settings_screen.dart';
-import 'package:intercom_app/providers/settings_provider.dart';
-import 'package:intercom_app/providers/room_provider.dart';
-import 'package:intercom_app/models/room_state.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -18,45 +12,36 @@ const _card = Color(0xFF0D1F38);
 const _border = Color(0xFF1A3A5C);
 const _muted = Color(0xFF445566);
 
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final call = ref.watch(callProvider);
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
 
-    ref.listen(callProvider, (prev, next) {
-      if (next.status == CallStatus.active &&
-          prev?.status != CallStatus.active) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const CallScreen()),
-          (route) => route.isFirst,
-        );
-      }
-    });
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  String? _connectedDeviceName;
+  bool _isConnected = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = ref.watch(settingsProvider);
+    final deviceName = settings.value?.deviceName ?? 'Mi dispositivo';
+    final avatarPath = settings.value?.avatarPath;
 
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        title: ref
-            .watch(settingsProvider)
-            .when(
-              data: (s) => Text(s.deviceName),
-              loading: () => const Text('Intercom'),
-              error: (_, __) => const Text('Intercom'),
-            ),
+        backgroundColor: _bg,
+        title: const Text(
+          'Intercom by CowTeam',
+          style: TextStyle(
+            color: _cyan,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
         actions: [
-          if (ref.watch(settingsProvider).value?.avatarPath != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: CircleAvatar(
-                radius: 16,
-                backgroundImage: FileImage(
-                  File(ref.watch(settingsProvider).value!.avatarPath!),
-                ),
-              ),
-            ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, color: _cyan),
             onPressed: () => Navigator.push(
@@ -66,123 +51,115 @@ class HomeScreen extends ConsumerWidget {
           ),
           IconButton(
             icon: const Icon(Icons.info_outline, color: _cyan),
-            onPressed: () {},
+            onPressed: () {}, // programar después
           ),
         ],
-        // ...resto igual
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 0.5, color: _border),
+        ),
       ),
-      body: call.status == CallStatus.incoming
-          ? _IncomingCallScreen(
-              device: call.remoteDevice!,
-              onAccept: () => ref.read(callProvider.notifier).acceptCall(),
-              onReject: () => ref.read(callProvider.notifier).endCall(),
-            )
-          : _IdleScreen(
-              isConnecting: call.status == CallStatus.connecting,
-              onSearch: () async {
-                final device = await Navigator.push<Device>(
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const SizedBox(height: 8),
+
+            // Tarjeta de perfil (rosado en mockup)
+            _ProfileCard(deviceName: deviceName, avatarPath: avatarPath),
+            const SizedBox(height: 12),
+
+            // Botón conectar con dispositivo (azul en mockup)
+            _ConnectButton(
+              isConnected: _isConnected,
+              connectedDeviceName: _connectedDeviceName,
+              onConnect: () async {
+                final result = await Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const DiscoveryScreen()),
                 );
-                if (device != null && context.mounted) {
-                  ref.read(callProvider.notifier).startCall(device);
+                if (result != null && context.mounted) {
+                  setState(() {
+                    _isConnected = true;
+                    _connectedDeviceName = result.name ?? 'Dispositivo';
+                  });
                 }
               },
+              onDisconnect: () {
+                setState(() {
+                  _isConnected = false;
+                  _connectedDeviceName = null;
+                });
+              },
             ),
-    );
-  }
-}
+            const SizedBox(height: 12),
 
-class _IdleScreen extends StatelessWidget {
-  final bool isConnecting;
-  final VoidCallback onSearch;
-
-  const _IdleScreen({required this.isConnecting, required this.onSearch});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _StatusCard(isConnecting: isConnecting),
-          const SizedBox(height: 12),
-          ElevatedButton.icon(
-            onPressed: isConnecting ? null : onSearch,
-            icon: const Icon(Icons.search),
-            label: Text(isConnecting ? 'Llamando...' : 'Buscar dispositivos'),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 14),
+            // Botón sala (negro en mockup)
+            _RoomButton(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const GroupScreen()),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
-          _AdvancedCard(),
-          const SizedBox(height: 12),
-          _GroupCard(),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-class _StatusCard extends StatelessWidget {
-  final bool isConnecting;
-  const _StatusCard({required this.isConnecting});
+// ── Tarjeta de perfil ──────────────────────────────────────
+class _ProfileCard extends StatelessWidget {
+  final String deviceName;
+  final String? avatarPath;
+
+  const _ProfileCard({required this.deviceName, this.avatarPath});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: _card,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _border),
       ),
-      child: Row(
+      child: Column(
         children: [
+          // Avatar
           Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: _bg,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _border),
-            ),
-            child: Icon(
-              isConnecting ? Icons.wifi_calling : Icons.link_off,
-              color: isConnecting ? _cyan : _muted,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isConnecting ? 'Conectando...' : 'Desconectado',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  isConnecting ? 'Esperando respuesta...' : 'Toca para buscar',
-                  style: const TextStyle(color: _muted, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            width: 10,
-            height: 10,
+            width: 80,
+            height: 80,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: isConnecting ? _cyan : _muted,
+              color: _bg,
+              border: Border.all(color: _cyan, width: 2),
+              image: avatarPath != null
+                  ? DecorationImage(
+                      image: FileImage(File(avatarPath!)),
+                      fit: BoxFit.cover,
+                    )
+                  : null,
             ),
+            child: avatarPath == null
+                ? const Icon(Icons.person, color: _cyan, size: 40)
+                : null,
+          ),
+          const SizedBox(height: 12),
+          // Nombre
+          Text(
+            deviceName,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Tu dispositivo',
+            style: TextStyle(color: _muted, fontSize: 11),
           ),
         ],
       ),
@@ -190,189 +167,109 @@ class _StatusCard extends StatelessWidget {
   }
 }
 
-class _AdvancedCard extends ConsumerStatefulWidget {
-  @override
-  ConsumerState<_AdvancedCard> createState() => _AdvancedCardState();
-}
+// ── Botón conectar ─────────────────────────────────────────
+class _ConnectButton extends StatelessWidget {
+  final bool isConnected;
+  final String? connectedDeviceName;
+  final VoidCallback onConnect;
+  final VoidCallback onDisconnect;
 
-class _AdvancedCardState extends ConsumerState<_AdvancedCard> {
-  bool _expanded = false;
-  bool _searching = false;
-  String? _error;
-  final _codeController = TextEditingController();
+  const _ConnectButton({
+    required this.isConnected,
+    required this.onConnect,
+    required this.onDisconnect,
+    this.connectedDeviceName,
+  });
 
-  Future<void> _connect() async {
-    final input = _codeController.text.trim();
-    if (input.isEmpty) return;
-
-    setState(() {
-      _searching = true;
-      _error = null;
-    });
-
-    // Intentar como código de sala grupal
-    await ref.read(roomProvider.notifier).joinRoomByCode(input);
-
-    if (context.mounted) {
-      final room = ref.read(roomProvider);
-      if (room.status != RoomStatus.idle) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const GroupScreen()),
-        );
-        setState(() => _searching = false);
-        return;
-      }
-    }
-
-    // Si no encontró sala, intentar como IP directa para llamada 1:1
-    if (input.contains('.')) {
-      final device = Device(
-        name: 'Android-${input.split('.').last}',
-        ip: input,
-        port: 5555,
-      );
-      if (context.mounted) {
-        ref.read(callProvider.notifier).startCall(device);
-      }
-      setState(() => _searching = false);
-      return;
-    }
-
-    setState(() {
-      _searching = false;
-      _error = 'No se encontró ninguna sala con ese código';
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: _card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            borderRadius: BorderRadius.circular(16),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                children: [
-                  const Icon(Icons.tune, color: _cyan, size: 18),
-                  const SizedBox(width: 10),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Conexión avanzada',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        SizedBox(height: 2),
-                        Text(
-                          'IP manual o código de sala',
-                          style: TextStyle(color: _muted, fontSize: 10),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    color: _muted,
-                    size: 18,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _codeController,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: 'Código de sala o IP',
-                            hintStyle: const TextStyle(color: _muted),
-                            filled: true,
-                            fillColor: _bg,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: const BorderSide(color: _border),
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
-                              borderSide: const BorderSide(color: _border),
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _searching
-                          ? const SizedBox(
-                              width: 40,
-                              height: 40,
-                              child: CircularProgressIndicator(
-                                color: _cyan,
-                                strokeWidth: 2,
-                              ),
-                            )
-                          : ElevatedButton(
-                              onPressed: _connect,
-                              child: const Text('Conectar'),
-                            ),
-                    ],
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      _error!,
-                      style: const TextStyle(
-                        color: Color(0xFFCC4444),
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _GroupCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const GroupScreen()),
+      onTap: isConnected ? onDisconnect : onConnect,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isConnected
+              ? const Color(0xFF00CC44).withOpacity(0.15)
+              : _card,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isConnected
+                ? const Color(0xFF00CC44).withOpacity(0.6)
+                : _border,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: isConnected
+                    ? const Color(0xFF00CC44).withOpacity(0.2)
+                    : _bg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: isConnected
+                      ? const Color(0xFF00CC44).withOpacity(0.5)
+                      : _border,
+                ),
+              ),
+              child: Icon(
+                isConnected ? Icons.wifi_tethering : Icons.wifi_tethering_off,
+                color: isConnected ? const Color(0xFF00CC44) : _muted,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isConnected
+                        ? 'Conectado a: $connectedDeviceName'
+                        : 'Conectar dispositivo',
+                    style: TextStyle(
+                      color: isConnected
+                          ? const Color(0xFF00CC44)
+                          : Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isConnected
+                        ? 'Toca para desconectar'
+                        : 'Buscar via WiFi Direct',
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              isConnected
+                  ? Icons.check_circle_outline
+                  : Icons.arrow_forward_ios,
+              color: isConnected ? const Color(0xFF00CC44) : _muted,
+              size: 16,
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+// ── Botón sala grupal ──────────────────────────────────────
+class _RoomButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _RoomButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -382,141 +279,40 @@ class _GroupCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(Icons.group_outlined, color: _cyan, size: 18),
-            const SizedBox(width: 10),
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: _cyan.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: _cyan.withOpacity(0.4)),
+              ),
+              child: const Icon(Icons.group_outlined, color: _cyan, size: 20),
+            ),
+            const SizedBox(width: 12),
             const Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Sala grupal',
+                    'Sala de comunicación',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 13,
+                      fontSize: 14,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
                   SizedBox(height: 2),
                   Text(
-                    'Conectar varios dispositivos',
-                    style: TextStyle(color: _muted, fontSize: 10),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.arrow_forward_ios, color: _muted, size: 14),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _IncomingCallScreen extends StatelessWidget {
-  final Device device;
-  final VoidCallback onAccept;
-  final VoidCallback onReject;
-
-  const _IncomingCallScreen({
-    required this.device,
-    required this.onAccept,
-    required this.onReject,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: _card,
-              border: Border.all(color: const Color(0xFF00CC66), width: 2),
-            ),
-            child: const Icon(
-              Icons.phone_in_talk,
-              color: Color(0xFF00CC66),
-              size: 36,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            device.name,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(device.ip, style: const TextStyle(color: _muted, fontSize: 13)),
-          const SizedBox(height: 8),
-          const Text(
-            'Llamada entrante',
-            style: TextStyle(color: _cyan, fontSize: 13),
-          ),
-          const SizedBox(height: 40),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Column(
-                children: [
-                  GestureDetector(
-                    onTap: onReject,
-                    child: Container(
-                      width: 60,
-                      height: 60,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFFCC2222),
-                      ),
-                      child: const Icon(
-                        Icons.call_end,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Rechazar',
+                    'Crear o unirse a una sala',
                     style: TextStyle(color: _muted, fontSize: 11),
                   ),
                 ],
               ),
-              const SizedBox(width: 60),
-              Column(
-                children: [
-                  GestureDetector(
-                    onTap: onAccept,
-                    child: Container(
-                      width: 60,
-                      height: 60,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFF00CC44),
-                      ),
-                      child: const Icon(
-                        Icons.call,
-                        color: Colors.white,
-                        size: 26,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Aceptar',
-                    style: TextStyle(color: Color(0xFF00CC44), fontSize: 11),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
+            ),
+            const Icon(Icons.arrow_forward_ios, color: _muted, size: 16),
+          ],
+        ),
       ),
     );
   }

@@ -12,6 +12,7 @@ import 'package:intercom_app/services/audio_service.dart';
 import 'package:intercom_app/services/wifi_direct_service.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:intercom_app/models/room_info.dart';
 
 final _wifiDirect = WifiDirectService();
 
@@ -107,6 +108,7 @@ class RoomNotifier extends Notifier<RoomState> {
     };
 
     await _startAudioCapture();
+    _room.startAutoReconnect();
 
     state = state.copyWith(
       status: RoomStatus.hosting,
@@ -141,6 +143,7 @@ class RoomNotifier extends Notifier<RoomState> {
     final avatarBase64 = await _loadAvatarBase64();
     await _room.joinRoom(_myName, _myIp, hostIp, avatarBase64: avatarBase64);
     await _startAudioCapture();
+    _room.startAutoReconnect();
 
     state = state.copyWith(
       status: RoomStatus.joined,
@@ -304,6 +307,32 @@ class RoomNotifier extends Notifier<RoomState> {
       if (!_audio.shouldTransmit(gained)) return;
       _room.sendAudio(Uint8List.fromList(gained));
     });
+  }
+
+  void setLowPowerMode(bool enabled) {
+    _room.setLowPowerMode(enabled);
+  }
+
+  void startAutoReconnect() {
+    _room.startAutoReconnect();
+  }
+
+  void setMemberEventCallback(void Function(String name, bool joined) cb) {
+    _room.onMemberEvent = cb;
+  }
+
+  Future<List<RoomInfo>> discoverRooms() async {
+    final raw = await RoomService.discoverRooms();
+    return raw
+        .map(
+          (r) => RoomInfo(
+            code: r['code']!,
+            hostIp: r['ip']!,
+            hostName: r['name']!.isNotEmpty ? r['name'] : null,
+            hostAvatarBase64: r['avatar']!.isNotEmpty ? r['avatar'] : null,
+          ),
+        )
+        .toList();
   }
 }
 
