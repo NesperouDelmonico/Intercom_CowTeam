@@ -4,6 +4,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.net.NetworkInterface
 
 class UdpEngine {
 
@@ -43,9 +44,9 @@ class UdpEngine {
         try { audioSocket    = DatagramSocket(AUDIO_PORT)    } catch (_: Exception) {}
         try { signalSocket   = DatagramSocket(SIGNAL_PORT)   } catch (_: Exception) {}
         try {
-            announceSocket = DatagramSocket(ANNOUNCE_PORT)
-            announceSocket?.broadcast = true
-        } catch (_: Exception) {}
+                announceSocket = DatagramSocket(ANNOUNCE_PORT)
+                announceSocket?.broadcast = true
+            } catch (_: Exception) {}
 
         startAudioReceiver()
         startSignalReceiver()

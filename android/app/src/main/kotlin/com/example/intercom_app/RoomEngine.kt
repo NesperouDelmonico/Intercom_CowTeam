@@ -52,11 +52,13 @@ class RoomEngine(
         myAvatar: String,
         roomCode: String,
     ) {
+        
         this.myIp      = myIp
         this.myName    = myName
         this.myAvatar  = myAvatar
         this.roomCode  = roomCode
         this.isRunning = true
+        android.util.Log.d("RoomEngine", "start() myIp=$myIp roomCode=$roomCode isRunning=$isRunning")
 
         members[myIp] = RoomMemberNative(
             name         = myName,
@@ -86,6 +88,7 @@ class RoomEngine(
 
     // ── RECEPTORES UDP ─────────────────────────────────
     private fun setupUdpCallbacks() {
+
         udp.onAudioReceived = { data, fromIp ->
             val member = members[fromIp]
             if (member != null && !member.isMuted) {
@@ -104,7 +107,7 @@ class RoomEngine(
         }
 
         udp.onAnnounceReceived = { msg, fromIp ->
-            if (fromIp != myIp) handleAnnounce(msg, fromIp)
+            handleAnnounce(msg, fromIp) // ← ya no filtra por fromIp aquí
         }
     }
 
@@ -144,21 +147,15 @@ class RoomEngine(
         val ip     = parts[2]
         val name   = parts[3]
         val avatar = parts[4]
-        val knownMembers = if (parts.size > 5 && parts[5].isNotEmpty())
+        val knownIps = if (parts.size > 5 && parts[5].isNotEmpty())
             parts[5].split(",") else emptyList()
 
         if (code != roomCode) return
+        if (ip == myIp) return
 
-        val isNew      = !members.containsKey(ip)
-        val wasOffline = members[ip]?.isOnline == false
-
-        members[ip] = RoomMemberNative(
-            name         = name,
-            ip           = ip,
-            avatarBase64 = avatar.ifEmpty { null },
-            isOnline     = true,
-            lastSeen     = System.currentTimeMillis()
-        )
+        val existing   = members[ip]
+        val isNew      = existing == null
+        val wasOffline = existing?.isOnline == false
 
         if (isNew) {
             members[ip] = RoomMemberNative(
@@ -168,28 +165,23 @@ class RoomEngine(
                 isOnline     = true,
                 lastSeen     = System.currentTimeMillis()
             )
-            // isNew ya garantiza que es genuinamente nuevo
             sound.playJoin()
             EventBus.send("memberJoined", mapOf("name" to name, "ip" to ip))
             notifyMembersChanged()
         } else {
-            members[ip]?.apply {
-                lastSeen = System.currentTimeMillis()
-                isOnline = true
-                if (avatarBase64 == null && avatar.isNotEmpty()) {
-                    avatarBase64 = avatar
-                }
+            existing!!.lastSeen = System.currentTimeMillis()
+            existing.isOnline = true
+            if (existing.avatarBase64 == null && avatar.isNotEmpty()) {
+                existing.avatarBase64 = avatar
             }
             if (wasOffline) {
-                // Reconexión — sí reproducir join
                 sound.playJoin()
                 EventBus.send("memberJoined", mapOf("name" to name, "ip" to ip))
                 notifyMembersChanged()
             }
         }
 
-        // Descubrir miembros que el otro conoce y nosotros no
-        for (memberIp in knownMembers) {
+        for (memberIp in knownIps) {
             if (memberIp.isNotEmpty() && memberIp != myIp &&
                 !members.containsKey(memberIp)) {
                 mainHandler.postDelayed({
@@ -198,7 +190,6 @@ class RoomEngine(
             }
         }
 
-        // Responder con nuestro propio ANNOUNCE
         sendAnnounceTo(ip)
     }
 
