@@ -2,9 +2,9 @@
 
 A new Flutter project.
 
-## Getting Started
+## Descargas de versiones por commit //Falta implementar versionado estricto.
 
-This project is a starting point for a Flutter application.
+Acá van a vivir las versiones de la app, separadas por cambios, pero todas las apk juntas.
 
 A few resources to get you started if this is your first Flutter project:
 

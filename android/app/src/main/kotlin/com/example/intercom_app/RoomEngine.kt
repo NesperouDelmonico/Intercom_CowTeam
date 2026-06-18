@@ -21,16 +21,19 @@ data class RoomMemberNative(
 class RoomEngine(
     private val udp: UdpEngine,
     private val audio: AudioEngine,
+    private val sound: SoundEngine,
 ) {
     companion object {
-        const val MEMBER_TIMEOUT_MS  = 6_000L
-        const val HEARTBEAT_MS       = 2_000L
-        const val ANNOUNCE_MS        = 1_500L
-        const val RECONNECT_DELAY_MS = 300L
+        const val MEMBER_TIMEOUT_MS  = 2_000L
+        const val HEARTBEAT_MS       = 400L
+        const val ANNOUNCE_MS        = 350L
+        const val RECONNECT_DELAY_MS = 100L
     }
 
     private val members = ConcurrentHashMap<String, RoomMemberNative>()
+    private val knownMembers: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val mainHandler = Handler(Looper.getMainLooper())
+    
 
     private var myIp      = ""
     private var myName    = ""
@@ -63,6 +66,7 @@ class RoomEngine(
             lastSeen     = System.currentTimeMillis()
         )
 
+        knownMembers.add(myIp)
         setupUdpCallbacks()
         startHeartbeat()
         startAnnounce()
@@ -114,9 +118,10 @@ class RoomEngine(
     }
 
     private fun handleLeave(fromIp: String) {
-        val member = members.remove(fromIp) ?: return
-        EventBus.send("memberLeft",
-            mapOf("name" to member.name, "ip" to member.ip))
+        val member = members[fromIp] ?: return
+        member.isOnline = false  // ← marcar offline en lugar de remover
+        sound.playLeave()
+        EventBus.send("memberLeft", mapOf("name" to member.name, "ip" to member.ip))
         notifyMembersChanged()
     }
 
@@ -147,6 +152,14 @@ class RoomEngine(
         val isNew      = !members.containsKey(ip)
         val wasOffline = members[ip]?.isOnline == false
 
+        members[ip] = RoomMemberNative(
+            name         = name,
+            ip           = ip,
+            avatarBase64 = avatar.ifEmpty { null },
+            isOnline     = true,
+            lastSeen     = System.currentTimeMillis()
+        )
+
         if (isNew) {
             members[ip] = RoomMemberNative(
                 name         = name,
@@ -155,8 +168,9 @@ class RoomEngine(
                 isOnline     = true,
                 lastSeen     = System.currentTimeMillis()
             )
-            EventBus.send("memberJoined",
-                mapOf("name" to name, "ip" to ip))
+            // isNew ya garantiza que es genuinamente nuevo
+            sound.playJoin()
+            EventBus.send("memberJoined", mapOf("name" to name, "ip" to ip))
             notifyMembersChanged()
         } else {
             members[ip]?.apply {
@@ -167,8 +181,9 @@ class RoomEngine(
                 }
             }
             if (wasOffline) {
-                EventBus.send("memberJoined",
-                    mapOf("name" to name, "ip" to ip))
+                // Reconexión — sí reproducir join
+                sound.playJoin()
+                EventBus.send("memberJoined", mapOf("name" to name, "ip" to ip))
                 notifyMembersChanged()
             }
         }
@@ -243,6 +258,7 @@ class RoomEngine(
                         changed = true
                         EventBus.send("memberLeft",
                             mapOf("name" to member.name, "ip" to member.ip))
+                            sound.playLeave()
                     }
                 }
                 if (changed) notifyMembersChanged()
@@ -258,7 +274,7 @@ class RoomEngine(
                     EventBus.send("connectionRestored", null)
                 }
             }
-        }, 5000L, 5000L)
+        }, 1000L, 500L)
     }
 
     // ── CONTROLES ──────────────────────────────────────
@@ -342,5 +358,6 @@ class RoomEngine(
         timeoutTimer?.cancel()
         audio.stopCapture()
         members.clear()
+        knownMembers.clear()
     }
 }

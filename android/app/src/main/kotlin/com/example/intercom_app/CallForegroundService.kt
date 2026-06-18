@@ -29,15 +29,19 @@ class CallForegroundService : Service() {
     private var audioEngine: AudioEngine? = null
     private var udpEngine:   UdpEngine?   = null
     private var roomEngine:  RoomEngine?  = null
+    private var soundEngine: SoundEngine? = null
+
 
     private var isCallActive    = false
     private var currentRoomCode = ""
 
+    //Sonidos de entrada y salida
     override fun onCreate() {
         super.onCreate()
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioEngine = AudioEngine(am)
         udpEngine   = UdpEngine()
+        soundEngine = SoundEngine(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -130,16 +134,20 @@ class CallForegroundService : Service() {
 
         isCallActive    = true
         currentRoomCode = roomCode
+        
+        //Sonido de entrada de participante
+        roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!)
 
         android.util.Log.d("CallService",
             "startCall myIp=$myIp roomCode=$roomCode")
 
         udpEngine?.start()
-        roomEngine = RoomEngine(udpEngine!!, audioEngine!!)
+        roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!)
         audioEngine?.startPlayback()
         roomEngine?.start(myIp, myName, myAvatar, roomCode)
 
         EventBus.send("callStarted", mapOf("roomCode" to roomCode))
+
     }
 
     // ── DETENER LLAMADA ────────────────────────────────
@@ -203,6 +211,7 @@ class CallForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        soundEngine?.release()
         stopCall()
         releaseWakeLock()
     }
