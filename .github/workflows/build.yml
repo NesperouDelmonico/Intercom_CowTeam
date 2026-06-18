@@ -1,0 +1,75 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Clonar repo ──────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Instalar Java ────────────────────────────
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # ── 3. Instalar Flutter ─────────────────────────
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.1
+          channel: stable
+
+      # ── 4. Instalar dependencias ────────────────────
+      - name: Flutter pub get
+        run: flutter pub get
+
+      # ── 5. Compilar APK debug ───────────────────────
+      - name: Build APK
+        run: flutter build apk --debug
+
+      # ── 6. Obtener info del commit ──────────────────
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "message=$(git log -1 --pretty=%s)" >> $GITHUB_OUTPUT
+
+      # ── 7. Renombrar APK con info del commit ────────
+      - name: Rename APK
+        run: |
+          mv build/app/outputs/flutter-apk/app-debug.apk \
+             build/app/outputs/flutter-apk/intercom-${{ steps.commit.outputs.date }}-${{ steps.commit.outputs.sha_short }}.apk
+
+      # ── 8. Crear Release en GitHub ──────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.commit.outputs.date }}-${{ steps.commit.outputs.sha_short }}
+          name: "[${{ steps.commit.outputs.date }}] ${{ steps.commit.outputs.message }}"
+          body: |
+            ## 📦 Build automático
+
+            **Commit:** `${{ steps.commit.outputs.sha_short }}`
+            **Fecha:** ${{ steps.commit.outputs.date }}
+            **Mensaje:** ${{ steps.commit.outputs.message }}
+
+            ### Instalación
+            1. Descarga el APK adjunto
+            2. En tu Android ve a **Ajustes → Seguridad → Fuentes desconocidas**
+            3. Instala el APK
+          files: |
+            build/app/outputs/flutter-apk/intercom-${{ steps.commit.outputs.date }}-${{ steps.commit.outputs.sha_short }}.apk
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
