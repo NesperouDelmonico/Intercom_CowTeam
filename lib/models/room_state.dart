@@ -29,6 +29,7 @@ class RoomState {
   final Map<String, RoomMember> members;
   final bool isHost;
   final bool globalMuted;
+  final bool isReconnecting;
 
   const RoomState({
     this.status = RoomStatus.idle,
@@ -36,6 +37,7 @@ class RoomState {
     this.members = const {},
     this.isHost = false,
     this.globalMuted = false,
+    this.isReconnecting = false,
   });
 
   RoomState copyWith({
@@ -44,6 +46,7 @@ class RoomState {
     Map<String, RoomMember>? members,
     bool? isHost,
     bool? globalMuted,
+    bool? isReconnecting,
   }) {
     return RoomState(
       status: status ?? this.status,
@@ -51,6 +54,7 @@ class RoomState {
       members: members ?? this.members,
       isHost: isHost ?? this.isHost,
       globalMuted: globalMuted ?? this.globalMuted,
+      isReconnecting: isReconnecting ?? this.isReconnecting,
     );
   }
 }

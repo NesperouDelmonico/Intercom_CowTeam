@@ -50,10 +50,7 @@ class RoomNotifier extends Notifier<RoomState> {
   void _setupNativeCallbacks() {
     NativeBridge.onMembersChanged = (membersList) {
       final members = <String, RoomMember>{};
-      print('DEBUG onMembersChanged: ${membersList.length} miembros');
-      for (final m in membersList) {
-        print('  - ${m['name']} ${m['ip']}');
-      }
+
       for (final m in membersList) {
         final ip = m['ip'] as String;
         members[ip] = RoomMember(
@@ -88,6 +85,13 @@ class RoomNotifier extends Notifier<RoomState> {
 
     NativeBridge.onSpeakingLevel = (ip, level) {
       ref.read(speakingLevelsProvider.notifier).update(ip, level);
+    };
+
+    NativeBridge.onConnectionLost = () {
+      state = state.copyWith(isReconnecting: true);
+    };
+    NativeBridge.onConnectionRestored = () {
+      state = state.copyWith(isReconnecting: false);
     };
   }
 
@@ -409,7 +413,9 @@ class RoomNotifier extends Notifier<RoomState> {
   void setVox({required bool enabled, required double threshold}) =>
       NativeBridge.setVox(enabled: enabled, threshold: threshold);
 
-  Future<void> setNoiseLevel(int level) async {}
+  Future<void> setNoiseLevel(int level) async {
+    await NativeBridge.setNoiseLevel(level);
+  }
 
   void setLowPowerMode(bool v) {}
 

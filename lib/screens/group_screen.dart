@@ -138,6 +138,38 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
           isActive
               ? _ActiveRoom(room: room, notifier: notifier)
               : _IdleRoom(notifier: notifier),
+          if (room.isReconnecting)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                color: const Color(0xFFCC8800),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    Text(
+                      'Reconectando...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           if (_notifications.isNotEmpty)
             Positioned(
               top: 8,
@@ -910,7 +942,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
   bool _voxEnabled = false;
   double _voxThreshold = 500;
   double _micGain = 1.0;
-  int _noiseLevel = 1;
+  int _noiseLevel = 2;
   bool _expanded = false;
 
   @override
@@ -1096,6 +1128,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                     ],
                   ),
                   const SizedBox(height: 10),
+                  // Cambiar _noiseLevel inicial a 1 (medio por defecto)
                   Row(
                     children: [
                       _NoiseBtn(
@@ -1120,6 +1153,14 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                         onTap: () {
                           setState(() => _noiseLevel = 2);
                           ref.read(roomProvider.notifier).setNoiseLevel(2);
+                        },
+                      ),
+                      _NoiseBtn(
+                        label: 'Auto',
+                        active: _noiseLevel == 3,
+                        onTap: () {
+                          setState(() => _noiseLevel = 3);
+                          ref.read(roomProvider.notifier).setNoiseLevel(3);
                         },
                       ),
                     ],

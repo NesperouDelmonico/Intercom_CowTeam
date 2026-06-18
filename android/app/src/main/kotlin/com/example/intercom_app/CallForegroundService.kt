@@ -96,6 +96,10 @@ class CallForegroundService : Service() {
                 val volume = intent.getFloatExtra("volume", 1.0f)
                 roomEngine?.setMemberVolume(ip, volume)
             }
+            "setNoiseLevel" -> {
+                val level = intent.getIntExtra("level", 1)
+                roomEngine?.setNoiseLevel(level)
+            }
             "stopCall" -> stopCall()
         }
     }

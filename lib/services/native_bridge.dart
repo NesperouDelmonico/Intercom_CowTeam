@@ -13,6 +13,8 @@ class NativeBridge {
   static void Function(String, String)? onMemberLeft;
   static void Function()? onCallStopped;
   static void Function(String ip, double level)? onSpeakingLevel;
+  static void Function()? onConnectionLost;
+  static void Function()? onConnectionRestored;
 
   static void startListening() {
     _sub?.cancel();
@@ -46,6 +48,12 @@ class NativeBridge {
         case 'memberLeft':
           final m = Map<String, dynamic>.from(data as Map);
           onMemberLeft?.call(m['name'] as String, m['ip'] as String);
+          break;
+        case 'connectionLost':
+          onConnectionLost?.call();
+          break;
+        case 'connectionRestored':
+          onConnectionRestored?.call();
           break;
         case 'callStopped':
           onCallStopped?.call();
@@ -109,5 +117,9 @@ class NativeBridge {
 
   static Future<void> stopForegroundService() async {
     await _method.invokeMethod('stopForegroundService');
+  }
+
+  static Future<void> setNoiseLevel(int level) async {
+    await _method.invokeMethod('setNoiseLevel', {'level': level});
   }
 }

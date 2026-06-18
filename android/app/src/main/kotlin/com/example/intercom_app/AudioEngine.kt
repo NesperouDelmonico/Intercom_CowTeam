@@ -7,6 +7,8 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import kotlin.math.sqrt
+import android.media.audiofx.NoiseSuppressor
+import android.media.audiofx.AcousticEchoCanceler
 
 class AudioEngine(private val audioManager: AudioManager) {
 
@@ -20,6 +22,9 @@ class AudioEngine(private val audioManager: AudioManager) {
     private var audioRecord:   AudioRecord? = null
     private var audioTrack:    AudioTrack?  = null
     private var captureThread: Thread?      = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
+
 
     @Volatile private var isCapturing = false
 
@@ -54,6 +59,14 @@ class AudioEngine(private val audioManager: AudioManager) {
 
         audioRecord = record
         isCapturing = true
+
+        // Activar filtros de audio si el hardware los soporta
+        if (NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
+        }
+        if (AcousticEchoCanceler.isAvailable()) {
+            echoCanceler = AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true }
+        }
 
         captureThread = Thread {
             val buffer = ByteArray(CHUNK_BYTES)
@@ -203,8 +216,39 @@ class AudioEngine(private val audioManager: AudioManager) {
         return rms > voxThreshold
     }
 
+    fun setNoiseLevel(level: Int) {
+        // level: 0=bajo, 1=medio, 2=alto, 3=auto
+        noiseSuppressor?.release()
+        echoCanceler?.release()
+        noiseSuppressor = null
+        echoCanceler    = null
+
+        val sessionId = audioRecord?.audioSessionId ?: return
+
+        when (level) {
+            0 -> { /* sin filtros */ }
+            1 -> {
+                if (NoiseSuppressor.isAvailable())
+                    noiseSuppressor = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
+            }
+            2, 3 -> {
+                if (NoiseSuppressor.isAvailable())
+                    noiseSuppressor = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
+                if (AcousticEchoCanceler.isAvailable())
+                    echoCanceler = AcousticEchoCanceler.create(sessionId)?.apply { enabled = true }
+            }
+        }
+
+        // Auto: activa VOX automático
+        voxEnabled = (level == 3)
+        if (level == 3) voxThreshold = 300.0
+    }
+
     fun release() {
         stopCapture()
         stopPlayback()
+        noiseSuppressor?.release()
+        echoCanceler?.release()
     }
+
 }

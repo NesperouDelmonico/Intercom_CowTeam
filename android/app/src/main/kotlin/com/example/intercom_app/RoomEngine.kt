@@ -246,6 +246,17 @@ class RoomEngine(
                     }
                 }
                 if (changed) notifyMembersChanged()
+
+                // Notificar estado de conexión
+                val onlineCount = members.values.count { 
+                    it.ip != myIp && it.isOnline 
+                }
+                val totalCount = members.values.count { it.ip != myIp }
+                if (totalCount > 0 && onlineCount == 0) {
+                    EventBus.send("connectionLost", null)
+                } else if (onlineCount > 0) {
+                    EventBus.send("connectionRestored", null)
+                }
             }
         }, 5000L, 5000L)
     }
@@ -315,6 +326,10 @@ class RoomEngine(
             )
         }
         EventBus.send("membersChanged", list)
+    }
+
+    fun setNoiseLevel(level: Int) {
+        audio.setNoiseLevel(level)
     }
 
     // ── SALIR ──────────────────────────────────────────

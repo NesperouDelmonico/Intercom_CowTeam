@@ -129,6 +129,16 @@ class MainActivity : FlutterActivity() {
                         startService(intent)
                         result.success(null)
                     }
+                    "setNoiseLevel" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setNoiseLevel")
+                            putExtra("level", call.argument<Int>("level") ?: 1)
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }  
+                
                     // Bluetooth y altavoz — se mantienen para la UI
                     "enableBluetooth" -> { enableBluetooth(); result.success(null) }
                     "disableBluetooth" -> { disableBluetooth(); result.success(null) }
