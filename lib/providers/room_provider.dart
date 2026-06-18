@@ -1,48 +1,119 @@
-import 'dart:typed_data';
 import 'dart:io';
-import 'dart:async';
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intercom_app/models/room_info.dart';
 import 'package:intercom_app/models/room_state.dart';
-import 'package:intercom_app/services/room_service.dart';
+import 'package:intercom_app/providers/settings_provider.dart';
+import 'package:intercom_app/services/native_bridge.dart';
+import 'package:intercom_app/services/wifi_direct_service.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:intercom_app/services/audio_service.dart';
-import 'package:intercom_app/services/wifi_direct_service.dart';
-import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:intercom_app/models/room_info.dart';
+import 'dart:io' as io;
+import 'dart:math';
 
 final _wifiDirect = WifiDirectService();
 
+class SpeakingLevelsNotifier extends Notifier<Map<String, double>> {
+  @override
+  Map<String, double> build() => {};
+
+  void update(String ip, double level) {
+    state = {...state, ip: level};
+  }
+}
+
+final speakingLevelsProvider =
+    NotifierProvider<SpeakingLevelsNotifier, Map<String, double>>(
+      SpeakingLevelsNotifier.new,
+    );
+
 class RoomNotifier extends Notifier<RoomState> {
-  final RoomService _room = RoomService();
-  static const _ch = MethodChannel('com.example.intercom_app/audio');
-  final AudioService _audio = AudioService();
-  String _myIp = '';
   String _myName = '';
+  String _myIp = '';
+  String _roomCode = '';
+  bool _callActive = false; // guard contra doble llamada
+
+  void Function(String, bool)? _memberEventCallback;
+  void Function()? _hostClosedCallback;
 
   @override
   RoomState build() {
-    _init();
+    _initName();
+    NativeBridge.startListening();
+    _setupNativeCallbacks();
     return const RoomState();
   }
 
-  Future<void> _init() async {
-    final info = await DeviceInfoPlugin().androidInfo;
-    _myName = info.model;
-    _myIp = await _getActiveIp();
+  void _setupNativeCallbacks() {
+    NativeBridge.onMembersChanged = (membersList) {
+      final members = <String, RoomMember>{};
+      print('DEBUG onMembersChanged: ${membersList.length} miembros');
+      for (final m in membersList) {
+        print('  - ${m['name']} ${m['ip']}');
+      }
+      for (final m in membersList) {
+        final ip = m['ip'] as String;
+        members[ip] = RoomMember(
+          name: m['name'] as String,
+          ip: ip,
+          isMuted: m['isMuted'] as bool? ?? false,
+          volume: (m['volume'] as num?)?.toDouble() ?? 1.0,
+          speakingLevel: (m['speakingLevel'] as num?)?.toDouble() ?? 0.0,
+          avatarBase64: m['avatarBase64'] as String?,
+          isOnline: m['isOnline'] as bool? ?? true,
+        );
+      }
+      state = state.copyWith(members: members);
+    };
+
+    NativeBridge.onMemberJoined = (name, ip) {
+      _memberEventCallback?.call(name, true);
+    };
+
+    NativeBridge.onMemberLeft = (name, ip) {
+      _memberEventCallback?.call(name, false);
+    };
+
+    NativeBridge.onCallStopped = () {
+      _callActive = false;
+      _hostClosedCallback?.call();
+    };
+
+    NativeBridge.onCallStarted = (roomCode) {
+      print('DEBUG onCallStarted: roomCode=$roomCode estado=${state.status}');
+    };
+
+    NativeBridge.onSpeakingLevel = (ip, level) {
+      ref.read(speakingLevelsProvider.notifier).update(ip, level);
+    };
   }
 
-  Future<String> _getActiveIp() async {
+  void setMemberEventCallback(void Function(String, bool) cb) =>
+      _memberEventCallback = cb;
+
+  void setHostClosedCallback(void Function() cb) => _hostClosedCallback = cb;
+
+  Future<void> _initName() async {
+    final info = await DeviceInfoPlugin().androidInfo;
+    try {
+      final settings = await ref.read(settingsProvider.future);
+      final name = settings?.deviceName as String?;
+      _myName = (name != null && name.isNotEmpty) ? name : info.model;
+    } catch (_) {
+      _myName = info.model;
+    }
+  }
+
+  Future<String> _getMyIp() async {
     for (int attempt = 0; attempt < 10; attempt++) {
       try {
         final interfaces = await NetworkInterface.list(
           type: InternetAddressType.IPv4,
           includeLinkLocal: false,
         );
-        // Preferir IP WiFi Direct
         for (final iface in interfaces) {
           for (final addr in iface.addresses) {
             if (!addr.isLoopback &&
@@ -52,7 +123,6 @@ class RoomNotifier extends Notifier<RoomState> {
             }
           }
         }
-        // Usar primera IP válida
         for (final iface in interfaces) {
           for (final addr in iface.addresses) {
             if (!addr.isLoopback && addr.address != '0.0.0.0') {
@@ -66,6 +136,283 @@ class RoomNotifier extends Notifier<RoomState> {
     return await NetworkInfo().getWifiIP() ?? '';
   }
 
+  Future<String?> _loadAvatar() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = io.File('${dir.path}/avatar.jpg');
+      if (!file.existsSync()) return null;
+      final bytes = await file.readAsBytes();
+      if (bytes.length > 30000) return null;
+      return base64Encode(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _generateRoomCode() => (1000 + Random().nextInt(9000)).toString();
+
+  // ── CREAR SALA ─────────────────────────────────────
+  Future<void> createRoom() async {
+    print('DEBUG createRoom: _callActive=$_callActive');
+    if (_callActive) return; // evitar doble llamada
+    print('DEBUG createRoom: BLOQUEADO por guard');
+    _callActive = true;
+    print('DEBUG createRoom: procediendo...');
+
+    try {
+      await _initName();
+      _myIp = await _getMyIp();
+      _roomCode = _generateRoomCode();
+      final avatar = await _loadAvatar();
+
+      _wifiDirect.startListening();
+      try {
+        final groupInfo = await _wifiDirect.requestGroupInfo();
+        if (groupInfo == null || groupInfo['isGroupOwner'] != true) {
+          await _wifiDirect.createGroupAndWait().timeout(
+            const Duration(seconds: 8),
+          );
+          await Future.delayed(const Duration(seconds: 1));
+          _myIp = await _getMyIp();
+        }
+      } catch (_) {}
+
+      await NativeBridge.startCallWithService(
+        deviceName: _myName,
+        myIp: _myIp,
+        myName: _myName,
+        myAvatar: avatar ?? '',
+        roomCode: _roomCode,
+      );
+
+      state = state.copyWith(
+        status: RoomStatus.hosting,
+        roomCode: _roomCode,
+        isHost: true,
+      );
+    } catch (e) {
+      _callActive = false; // resetear si falla
+      rethrow;
+    }
+  }
+
+  // ── UNIRSE A SALA ──────────────────────────────────
+  Future<void> joinRoom(String coordIp) async {
+    if (_callActive) return; // evitar doble llamada
+    _callActive = true;
+
+    try {
+      await _initName();
+      _myIp = await _getMyIp();
+      final avatar = await _loadAvatar();
+
+      await NativeBridge.startCallWithService(
+        deviceName: _myName,
+        myIp: _myIp,
+        myName: _myName,
+        myAvatar: avatar ?? '',
+        roomCode: state.roomCode ?? _roomCode,
+      );
+
+      state = state.copyWith(status: RoomStatus.joined, isHost: false);
+    } catch (e) {
+      _callActive = false;
+      rethrow;
+    }
+  }
+
+  Future<void> joinRoomByCode(String code) async {
+    final hostIp = await _findRoomHost(code);
+    if (hostIp == null) return;
+    state = state.copyWith(roomCode: code);
+    _roomCode = code;
+    await joinRoom(hostIp);
+    state = state.copyWith(roomCode: code);
+  }
+
+  Future<bool> searchAndJoinViaWifiDirect(String code) async {
+    final hostIp = await _findRoomHost(code);
+    if (hostIp == null) return false;
+    state = state.copyWith(roomCode: code);
+    _roomCode = code;
+    await joinRoom(hostIp);
+    state = state.copyWith(roomCode: code);
+    return true;
+  }
+
+  // ── BÚSQUEDA DE SALA ───────────────────────────────
+  Future<String?> _findRoomHost(String code) async {
+    final result = await _listenForAnnounce(code, seconds: 3);
+    if (result != null) return result;
+    return await _scanForRoom(code);
+  }
+
+  Future<String?> _listenForAnnounce(String code, {int seconds = 3}) async {
+    try {
+      final sock = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        5562,
+        reuseAddress: true,
+      );
+      final c = Completer<String?>();
+      sock.listen((e) {
+        if (e != RawSocketEvent.read) return;
+        final dg = sock.receive();
+        if (dg == null) return;
+        final msg = String.fromCharCodes(dg.data);
+        if (msg.startsWith('ANNOUNCE:$code:') && !c.isCompleted) {
+          final parts = msg.split(':');
+          if (parts.length > 2) c.complete(parts[2]);
+        }
+      });
+      Future.delayed(Duration(seconds: seconds), () {
+        if (!c.isCompleted) c.complete(null);
+      });
+      final result = await c.future;
+      sock.close();
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _scanForRoom(String code) async {
+    try {
+      final recv = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        5562,
+        reuseAddress: true,
+      );
+      final send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      send.broadcastEnabled = true;
+      final c = Completer<String?>();
+
+      recv.listen((e) {
+        if (e != RawSocketEvent.read) return;
+        final dg = recv.receive();
+        if (dg == null) return;
+        final msg = String.fromCharCodes(dg.data);
+        if (msg.startsWith('ANNOUNCE:$code:') && !c.isCompleted) {
+          final parts = msg.split(':');
+          if (parts.length > 2) c.complete(parts[2]);
+        }
+      });
+
+      for (int i = 1; i <= 254; i++) {
+        if (c.isCompleted) break;
+        try {
+          send.send(
+            'WHO:$code'.codeUnits,
+            InternetAddress('192.168.49.$i'),
+            5561,
+          );
+        } catch (_) {}
+        if (i % 30 == 0) {
+          await Future.delayed(const Duration(milliseconds: 20));
+        }
+      }
+
+      Future.delayed(const Duration(seconds: 6), () {
+        if (!c.isCompleted) c.complete(null);
+      });
+      final result = await c.future;
+      send.close();
+      recv.close();
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ── DESCUBRIR SALAS ────────────────────────────────
+  Future<List<RoomInfo>> discoverRooms() async {
+    final rooms = <RoomInfo>[];
+    final seen = <String>{};
+    final c = Completer<List<RoomInfo>>();
+
+    try {
+      final recv = await RawDatagramSocket.bind(
+        InternetAddress.anyIPv4,
+        5562,
+        reuseAddress: true,
+      );
+      final send = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      send.broadcastEnabled = true;
+
+      recv.listen((e) {
+        if (e != RawSocketEvent.read) return;
+        final dg = recv.receive();
+        if (dg == null) return;
+        final msg = String.fromCharCodes(dg.data);
+        if (!msg.startsWith('ANNOUNCE:')) return;
+
+        final parts = msg.split(':');
+        if (parts.length < 5) return;
+
+        final code = parts[1];
+        final ip = parts[2];
+        final name = parts[3];
+        final avatar = parts[4];
+
+        if (!seen.contains(ip)) {
+          seen.add(ip);
+          rooms.add(
+            RoomInfo(
+              code: code,
+              hostIp: ip,
+              hostName: name.isNotEmpty ? name : null,
+              hostAvatarBase64: avatar.isNotEmpty ? avatar : null,
+            ),
+          );
+        }
+      });
+
+      send.send('WHO:*'.codeUnits, InternetAddress('192.168.49.255'), 5561);
+      for (int i = 1; i <= 254; i++) {
+        try {
+          send.send('WHO:*'.codeUnits, InternetAddress('192.168.49.$i'), 5561);
+        } catch (_) {}
+        if (i % 30 == 0) {
+          await Future.delayed(const Duration(milliseconds: 20));
+        }
+      }
+
+      Future.delayed(const Duration(seconds: 5), () {
+        if (!c.isCompleted) {
+          c.complete(rooms);
+          recv.close();
+          send.close();
+        }
+      });
+
+      return await c.future;
+    } catch (_) {
+      return rooms;
+    }
+  }
+
+  // ── CONTROLES ──────────────────────────────────────
+  void toggleGlobalMute() {
+    final muted = !state.globalMuted;
+    state = state.copyWith(globalMuted: muted);
+    NativeBridge.setMuted(muted);
+  }
+
+  void setMemberMuted(String ip, bool muted) =>
+      NativeBridge.setMemberMuted(ip, muted);
+
+  void setMemberVolume(String ip, double volume) =>
+      NativeBridge.setMemberVolume(ip, volume);
+
+  void setMicGain(double gain) => NativeBridge.setGain(gain);
+
+  void setVox({required bool enabled, required double threshold}) =>
+      NativeBridge.setVox(enabled: enabled, threshold: threshold);
+
+  Future<void> setNoiseLevel(int level) async {}
+
+  void setLowPowerMode(bool v) {}
+
   Future<bool> hasNetworkConnection() async {
     try {
       final ip = await NetworkInfo().getWifiIP();
@@ -75,264 +422,13 @@ class RoomNotifier extends Notifier<RoomState> {
     }
   }
 
-  Future<void> createRoom() async {
-    await _init();
-    final code = _room.generateRoomCode();
-    await _ch.invokeMethod('startPlayback');
-
-    _room.onAudioReceived = (data, fromIp) {
-      final member = _room.members[fromIp];
-      if (member == null || member.isMuted) return;
-      final adjusted = _applyVolume(data, member.volume);
-      _ch.invokeMethod('playChunk', {'data': adjusted});
-    };
-
-    _room.onMembersChanged = (members) {
-      state = state.copyWith(members: Map.from(members));
-    };
-
-    final avatarBase64 = await _loadAvatarBase64();
-
-    _wifiDirect.startListening();
-    try {
-      await _wifiDirect.createGroup();
-    } catch (_) {}
-
-    await _room.createRoom(_myName, _myIp, avatarBase64: avatarBase64);
-    _room.announceRoom(code);
-
-    _room.onRoomQuery = (queryCode, fromIp) {
-      if (queryCode == code) {
-        _room.respondToQuery(fromIp, code);
-      }
-    };
-
-    await _startAudioCapture();
-    _room.startAutoReconnect();
-
-    state = state.copyWith(
-      status: RoomStatus.hosting,
-      roomCode: code,
-      isHost: true,
-      members: Map.from(_room.members),
-    );
-  }
-
-  Future<void> joinRoom(String hostIp) async {
-    await _init();
-
-    // Esperar que la interfaz de red esté lista
-    await Future.delayed(const Duration(seconds: 2));
-
-    // Re-obtener IP por si cambió
-    _myIp = await _getActiveIp();
-
-    await _ch.invokeMethod('startPlayback');
-
-    _room.onAudioReceived = (data, fromIp) {
-      final member = _room.members[fromIp];
-      if (member == null || member.isMuted) return;
-      final adjusted = _applyVolume(data, member.volume);
-      _ch.invokeMethod('playChunk', {'data': adjusted});
-    };
-
-    _room.onMembersChanged = (members) {
-      state = state.copyWith(members: Map.from(members));
-    };
-
-    final avatarBase64 = await _loadAvatarBase64();
-    await _room.joinRoom(_myName, _myIp, hostIp, avatarBase64: avatarBase64);
-    await _startAudioCapture();
-    _room.startAutoReconnect();
-
-    state = state.copyWith(
-      status: RoomStatus.joined,
-      isHost: false,
-      members: Map.from(_room.members),
-    );
-  }
-
-  Future<void> joinRoomByCode(String code) async {
-    // Estrategia 1: red WiFi normal
-    var hostIp = await RoomService.findRoomHost(code);
-    if (hostIp != null) {
-      await joinRoom(hostIp);
-      return;
-    }
-    // Estrategia 2: subred WiFi Direct
-    await searchAndJoinViaWifiDirect(code);
-  }
-
-  Future<bool> searchAndJoinViaWifiDirect(String code) async {
-    final completer = Completer<String?>();
-    try {
-      final receiveSocket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        RoomService.announcePort,
-        reuseAddress: true,
-      );
-
-      receiveSocket.listen((event) {
-        if (event == RawSocketEvent.read) {
-          final dg = receiveSocket.receive();
-          if (dg == null) return;
-          final msg = String.fromCharCodes(dg.data);
-          if (msg.startsWith('ROOM:$code:') && !completer.isCompleted) {
-            completer.complete(msg.split(':')[2]);
-          }
-        }
-      });
-
-      final querySocket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        0,
-      );
-      for (int i = 1; i <= 10; i++) {
-        querySocket.send(
-          'ROOM_QUERY:$code'.codeUnits,
-          InternetAddress('192.168.49.$i'),
-          RoomService.signalPort,
-        );
-      }
-
-      Future.delayed(const Duration(seconds: 5), () {
-        if (!completer.isCompleted) completer.complete(null);
-      });
-
-      final hostIp = await completer.future;
-      querySocket.close();
-      receiveSocket.close();
-
-      if (hostIp == null) return false;
-      await joinRoom(hostIp);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> _startAudioCapture() async {
-    final hasPermission = await _audio.recorder.hasPermission();
-    if (!hasPermission) return;
-
-    final stream = await _audio.recorder.startStream(
-      const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-        echoCancel: true,
-        noiseSuppress: true,
-        autoGain: true,
-      ),
-    );
-
-    stream.listen((chunk) {
-      if (state.globalMuted) return;
-      final gained = _audio.applyGain(chunk, _audio.micGain);
-      if (!_audio.shouldTransmit(gained)) return;
-      _room.sendAudio(Uint8List.fromList(gained));
-    });
-  }
-
-  Uint8List _applyVolume(Uint8List data, double volume) {
-    if (volume == 1.0) return data;
-    final result = Uint8List(data.length);
-    for (int i = 0; i < data.length - 1; i += 2) {
-      final s = data[i] | (data[i + 1] << 8);
-      final signed = s > 32767 ? s - 65536 : s;
-      final adjusted = (signed * volume).round().clamp(-32768, 32767);
-      result[i] = adjusted & 0xFF;
-      result[i + 1] = (adjusted >> 8) & 0xFF;
-    }
-    return result;
-  }
-
-  Future<String?> _loadAvatarBase64() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/avatar.jpg');
-      if (!file.existsSync()) return null;
-      final bytes = await file.readAsBytes();
-      // Solo enviar si es menor a 30KB — si es mayor, no enviar avatar
-      if (bytes.length > 30000) return null;
-      return base64Encode(bytes);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  void setMemberMuted(String ip, bool muted) {
-    _room.setMemberMuted(ip, muted);
-  }
-
-  void setMemberVolume(String ip, double volume) {
-    _room.setMemberVolume(ip, volume);
-    state = state.copyWith(members: Map.from(_room.members));
-  }
-
-  void toggleGlobalMute() {
-    state = state.copyWith(globalMuted: !state.globalMuted);
-  }
-
+  // ── SALIR ──────────────────────────────────────────
   Future<void> leaveRoom() async {
-    _room.leaveRoom();
-    await _audio.stopCall();
-    await _ch.invokeMethod('stopPlayback');
+    _callActive = false;
+    await NativeBridge.stopCall();
+    await NativeBridge.stopForegroundService();
     state = const RoomState();
-  }
-
-  void setMicGain(double gain) {
-    _audio.setMicGain(gain);
-  }
-
-  void setVox({required bool enabled, required double threshold}) {
-    _audio.setVox(enabled: enabled, threshold: threshold);
-  }
-
-  Future<void> setNoiseLevel(int level) async {
-    await _audio.recorder.stop();
-    final stream = await _audio.recorder.startStream(
-      RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-        echoCancel: true,
-        noiseSuppress: level > 0,
-        autoGain: level > 1,
-      ),
-    );
-    stream.listen((chunk) {
-      if (state.globalMuted) return;
-      final gained = _audio.applyGain(chunk, _audio.micGain);
-      if (!_audio.shouldTransmit(gained)) return;
-      _room.sendAudio(Uint8List.fromList(gained));
-    });
-  }
-
-  void setLowPowerMode(bool enabled) {
-    _room.setLowPowerMode(enabled);
-  }
-
-  void startAutoReconnect() {
-    _room.startAutoReconnect();
-  }
-
-  void setMemberEventCallback(void Function(String name, bool joined) cb) {
-    _room.onMemberEvent = cb;
-  }
-
-  Future<List<RoomInfo>> discoverRooms() async {
-    final raw = await RoomService.discoverRooms();
-    return raw
-        .map(
-          (r) => RoomInfo(
-            code: r['code']!,
-            hostIp: r['ip']!,
-            hostName: r['name']!.isNotEmpty ? r['name'] : null,
-            hostAvatarBase64: r['avatar']!.isNotEmpty ? r['avatar'] : null,
-          ),
-        )
-        .toList();
+    _roomCode = '';
   }
 }
 

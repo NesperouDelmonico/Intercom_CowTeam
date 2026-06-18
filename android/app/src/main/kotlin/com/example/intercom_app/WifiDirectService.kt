@@ -29,23 +29,18 @@ class WifiDirectService(
     private val receiver = object : BroadcastReceiver() {
 
         override fun onReceive(ctx: Context, intent: Intent) {
-    android.util.Log.d("WifiDirect", "Action received: ${intent.action}")
-    when (intent.action) {
+        when (intent.action) {
         WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
             val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-            android.util.Log.d("WifiDirect", "P2P state: $state (2=enabled)")
             if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) {
                 sendEvent("wifiDirectDisabled", null)
             }
         }
         WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
-            android.util.Log.d("WifiDirect", "Peers changed — requesting peer list")
             manager.requestPeers(channel) { peerList ->
-                android.util.Log.d("WifiDirect", "Peers found: ${peerList.deviceList.size}")
                 peers.clear()
                 peers.addAll(peerList.deviceList)
                 val list = peers.map {
-                    android.util.Log.d("WifiDirect", "Peer: ${it.deviceName} addr=${it.deviceAddress} status=${it.status}")
                     mapOf(
                         "name" to it.deviceName,
                         "address" to it.deviceAddress,
@@ -56,23 +51,21 @@ class WifiDirectService(
             }
         }
         WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-            android.util.Log.d("WifiDirect", "Connection changed")
             @Suppress("DEPRECATION")
             val networkInfo: android.net.NetworkInfo? =
                 intent.getParcelableExtra(WifiP2pManager.EXTRA_NETWORK_INFO)
-            android.util.Log.d("WifiDirect", "Network connected: ${networkInfo?.isConnected}")
 
             if (networkInfo?.isConnected == true) {
                 manager.requestConnectionInfo(channel) { info ->
-                    android.util.Log.d("WifiDirect", "isGroupOwner: ${info.isGroupOwner} ownerAddr: ${info.groupOwnerAddress?.hostAddress}")
                     isGroupOwner = info.isGroupOwner
                     groupOwnerAddress = info.groupOwnerAddress?.hostAddress ?: ""
-                    sendEvent(
-                        "connected", mapOf(
-                            "isGroupOwner" to isGroupOwner,
-                            "groupOwnerAddress" to groupOwnerAddress
-                        )
-                    )
+                    if (info.isGroupOwner && onGroupReady != null) {
+                        onGroupReady?.invoke(groupOwnerAddress)
+                    }
+                    sendEvent("connected", mapOf(
+                        "isGroupOwner" to isGroupOwner,
+                        "groupOwnerAddress" to groupOwnerAddress
+                    ))
                 }
             } else {
                 sendEvent("disconnected", null)
@@ -82,7 +75,6 @@ class WifiDirectService(
             @Suppress("DEPRECATION")
             val device: WifiP2pDevice? =
                 intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
-            android.util.Log.d("WifiDirect", "This device changed: ${device?.deviceName}")
             device?.let {
                 sendEvent("thisDeviceChanged", mapOf("name" to it.deviceName))
             }
@@ -184,4 +176,77 @@ fun requestGroupInfo(result: MethodChannel.Result) {
         ))
     }
 }
+
+    fun requestConnectedPeers(result: MethodChannel.Result) {
+        manager.requestConnectionInfo(channel) { info ->
+            if (info == null || !info.groupFormed) {
+                result.success(emptyList<Map<String, String>>())
+                return@requestConnectionInfo
+            }
+
+            if (info.isGroupOwner) {
+                // Soy GO — pedir lista de clientes
+                manager.requestGroupInfo(channel) { group ->
+                    if (group == null) {
+                        result.success(emptyList<Map<String, String>>())
+                        return@requestGroupInfo
+                    }
+                    val clients = group.clientList.map { device ->
+                        mapOf(
+                            "name" to device.deviceName,
+                            "address" to device.deviceAddress,
+                        )
+                    }
+                    result.success(clients)
+                }
+            } else {
+                // Soy cliente — el GO es mi único peer conectado
+                val goAddress = info.groupOwnerAddress?.hostAddress ?: ""
+                // Buscar el nombre del GO en la lista de peers
+                val goName = peers.find { peer ->
+                    // El GO puede estar en la lista con status 0 (conectado)
+                    peer.status == 0
+                }?.deviceName ?: "Group Owner"
+
+                result.success(listOf(
+                    mapOf(
+                        "name" to goName,
+                        "address" to goAddress,
+                    )
+                ))
+            }
+        }
+    }
+
+    private var onGroupReady: ((String) -> Unit)? = null
+
+   fun createGroupAndWait(result: MethodChannel.Result) {
+    // Primero remover cualquier grupo existente
+    manager.removeGroup(channel, object : ActionListener {
+        override fun onSuccess() { doCreateGroup(result) }
+        override fun onFailure(reason: Int) { doCreateGroup(result) }
+    })
+}
+
+    private fun doCreateGroup(result: MethodChannel.Result) {
+        manager.createGroup(channel, object : ActionListener {
+            override fun onSuccess() {
+                onGroupReady = { ownerIp ->
+                    result.success(ownerIp)
+                    onGroupReady = null
+                }
+                // Timeout de seguridad — si en 10s no llega el evento, resolver igual
+                android.os.Handler(context.mainLooper).postDelayed({
+                    if (onGroupReady != null) {
+                        onGroupReady = null
+                        result.success("192.168.49.1")
+                    }
+                }, 10000)
+            }
+            override fun onFailure(reason: Int) {
+                // Si falla (por ejemplo ya hay grupo), resolver con GO IP
+                result.success("192.168.49.1")
+            }
+        })
+    }
 }

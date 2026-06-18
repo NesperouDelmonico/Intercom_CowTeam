@@ -98,4 +98,27 @@ class WifiDirectService {
   Future<Map?> requestGroupInfo() async {
     return await _method.invokeMethod<Map>('requestGroupInfo');
   }
+
+  Future<List<WifiDirectPeer>> requestConnectedPeers() async {
+    final result = await _method.invokeMethod<List>('requestConnectedPeers');
+    if (result == null) return [];
+    return result
+        .map(
+          (p) => WifiDirectPeer(
+            name: p['name'] as String,
+            address: p['address'] as String,
+            status: 0,
+          ),
+        )
+        .toList();
+  }
+
+  Future<String?> createGroupAndWait() async {
+    try {
+      final result = await _method.invokeMethod<String>('createGroupAndWait');
+      return result;
+    } catch (e) {
+      return null;
+    }
+  }
 }

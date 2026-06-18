@@ -1,14 +1,11 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/room_state.dart';
 import 'package:intercom_app/providers/room_provider.dart';
-import 'package:intercom_app/screens/discovery_screen.dart';
-import 'package:intercom_app/models/device.dart';
 import 'package:flutter/services.dart';
-import 'package:intercom_app/services/room_service.dart';
-import 'dart:convert';
 import 'package:intercom_app/models/room_info.dart';
 
 const _cyan = Color(0xFF00E5FF);
@@ -28,6 +25,7 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
   Duration _elapsed = Duration.zero;
   Timer? _timer;
   final List<String> _notifications = [];
+  bool _callbackRegistered = false;
 
   @override
   void initState() {
@@ -36,25 +34,25 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
       if (mounted) setState(() => _elapsed += const Duration(seconds: 1));
     });
 
-    // Escuchar eventos de miembros
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_callbackRegistered) return;
+      _callbackRegistered = true;
+
       ref.read(roomProvider.notifier).setMemberEventCallback((name, joined) {
-        if (mounted) {
-          setState(() {
-            _notifications.add(
-              joined ? '$name se unió' : '$name se desconectó',
-            );
-          });
-          // Auto-eliminar después de 3 segundos
-          Future.delayed(const Duration(seconds: 3), () {
-            if (mounted)
-              setState(
-                () => _notifications.remove(
-                  joined ? '$name se unió' : '$name se desconectó',
-                ),
-              );
-          });
-        }
+        if (!mounted) return;
+        final msg = joined ? '$name se unió' : '$name se desconectó';
+        setState(() => _notifications.add(msg));
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) setState(() => _notifications.remove(msg));
+        });
+      });
+
+      ref.read(roomProvider.notifier).setHostClosedCallback(() {
+        if (!mounted) return;
+        setState(() => _notifications.add('El host cerró la sala'));
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) Navigator.pop(context);
+        });
       });
     });
   }
@@ -140,7 +138,6 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
           isActive
               ? _ActiveRoom(room: room, notifier: notifier)
               : _IdleRoom(notifier: notifier),
-          // Notificaciones flotantes
           if (_notifications.isNotEmpty)
             Positioned(
               top: 8,
@@ -205,109 +202,11 @@ class _IdleRoomState extends ConsumerState<_IdleRoom> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Info card
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _card,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _border),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.info_outline, color: _muted, size: 14),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Sin router: el creador activa su Hotspot, los demás se conectan a él y luego ingresan el código.',
-                    style: TextStyle(color: _muted, fontSize: 10),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
           // Crear sala
           ElevatedButton.icon(
             onPressed: () async {
-              final hasNetwork = await widget.notifier.hasNetworkConnection();
-              if (!hasNetwork && context.mounted) {
-                final confirmed = await showDialog<bool>(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (ctx) => AlertDialog(
-                    backgroundColor: _card,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      side: const BorderSide(color: _border),
-                    ),
-                    title: const Row(
-                      children: [
-                        Icon(Icons.wifi_tethering, color: _cyan, size: 20),
-                        SizedBox(width: 8),
-                        Text(
-                          'Sin red WiFi',
-                          style: TextStyle(color: Colors.white, fontSize: 16),
-                        ),
-                      ],
-                    ),
-                    content: const Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Para conectar sin router activa tu Hotspot personal.',
-                          style: TextStyle(color: _muted, fontSize: 13),
-                        ),
-                        SizedBox(height: 12),
-                        Text(
-                          'Pasos:',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          '1. Activa tu Hotspot personal',
-                          style: TextStyle(color: _muted, fontSize: 12),
-                        ),
-                        Text(
-                          '2. Los demás se conectan a tu hotspot',
-                          style: TextStyle(color: _muted, fontSize: 12),
-                        ),
-                        Text(
-                          '3. Vuelve y crea la sala',
-                          style: TextStyle(color: _muted, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        child: const Text(
-                          'Cancelar',
-                          style: TextStyle(color: _muted),
-                        ),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: () {
-                          Navigator.pop(ctx, true);
-                          const MethodChannel(
-                            'com.example.intercom_app/audio',
-                          ).invokeMethod('openHotspotSettings');
-                        },
-                        icon: const Icon(Icons.settings, size: 16),
-                        label: const Text('Abrir Hotspot'),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirmed != true) return;
-              }
-              widget.notifier.createRoom();
+              print('DEBUG botón Crear sala presionado');
+              await widget.notifier.createRoom();
             },
             icon: const Icon(Icons.add),
             label: const Text('Crear sala'),
@@ -341,11 +240,6 @@ class _IdleRoomState extends ConsumerState<_IdleRoom> {
                       ),
                     ),
                   ],
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  'WiFi normal o Hotspot del host',
-                  style: TextStyle(color: _muted, fontSize: 10),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -433,7 +327,7 @@ class _IdleRoomState extends ConsumerState<_IdleRoom> {
           ),
           const SizedBox(height: 12),
 
-          // Buscar via WiFi Direct
+          // Buscar salas activas
           _RoomDiscovery(notifier: widget.notifier),
         ],
       ),
@@ -449,7 +343,10 @@ class _ActiveRoom extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final members = room.members.values.toList();
+    final members = room.members.values
+        .toList()
+        .where((m) => m.isOnline)
+        .toList();
     return Column(
       children: [
         Expanded(
@@ -480,7 +377,7 @@ class _ActiveRoom extends StatelessWidget {
 }
 
 // ── Tarjeta de miembro ─────────────────────────────────────
-class _MemberCard extends StatefulWidget {
+class _MemberCard extends ConsumerStatefulWidget {
   final RoomMember member;
   final RoomNotifier notifier;
   final String? avatarBase64;
@@ -492,10 +389,10 @@ class _MemberCard extends StatefulWidget {
   });
 
   @override
-  State<_MemberCard> createState() => _MemberCardState();
+  ConsumerState<_MemberCard> createState() => _MemberCardState();
 }
 
-class _MemberCardState extends State<_MemberCard> {
+class _MemberCardState extends ConsumerState<_MemberCard> {
   bool _menuOpen = false;
   Uint8List? _cachedAvatar;
 
@@ -528,7 +425,8 @@ class _MemberCardState extends State<_MemberCard> {
   @override
   Widget build(BuildContext context) {
     final m = widget.member;
-    final isSpeaking = m.speakingLevel > 0.08 && !m.isMuted;
+    final level = ref.watch(speakingLevelsProvider)[m.ip] ?? 0.0;
+    final isSpeaking = level > 0.08 && !m.isMuted;
     final initials = m.name.length >= 2
         ? m.name.substring(0, 2).toUpperCase()
         : m.name.toUpperCase();
@@ -827,7 +725,7 @@ class _GlobalControls extends StatefulWidget {
 class _GlobalControlsState extends State<_GlobalControls> {
   bool _isBluetooth = false;
   bool _isSpeaker = true;
-  static const _ch = MethodChannel('com.example.intercom_app/audio');
+  static const _ch = MethodChannel('com.example.intercom_app/call_service');
 
   @override
   void initState() {
@@ -837,10 +735,12 @@ class _GlobalControlsState extends State<_GlobalControls> {
 
   Future<void> _checkBluetooth() async {
     final hasBt = await _ch.invokeMethod<bool>('isBluetoothConnected') ?? false;
-    setState(() {
-      _isBluetooth = hasBt;
-      _isSpeaker = !hasBt;
-    });
+    if (mounted) {
+      setState(() {
+        _isBluetooth = hasBt;
+        _isSpeaker = !hasBt;
+      });
+    }
   }
 
   Future<void> _activateBluetooth() async {
@@ -1356,7 +1256,7 @@ class _RoomDiscoveryState extends State<_RoomDiscovery> {
             (room) => _RoomCard(
               room: room,
               onJoin: () async {
-                await widget.notifier.joinRoom(room.hostIp);
+                await widget.notifier.joinRoomByCode(room.code);
               },
             ),
           ),
@@ -1388,8 +1288,14 @@ class _RoomCard extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Sala de ${room.hostName} (${room.hostIp})',
-              style: const TextStyle(color: Colors.white, fontSize: 13),
+              room.hostName != null && room.hostName!.isNotEmpty
+                  ? 'Sala de ${room.hostName}'
+                  : 'Sala activa · ${room.code}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
           ElevatedButton(

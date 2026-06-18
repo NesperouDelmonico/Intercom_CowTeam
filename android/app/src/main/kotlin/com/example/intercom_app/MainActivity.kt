@@ -4,39 +4,23 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothProfile
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
+import android.content.Intent
 import android.media.AudioManager
-import android.media.AudioRecord
-import android.media.AudioTrack
-import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
-import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
-import kotlin.math.sqrt
-import android.content.Intent
-import android.os.Build
-import android.net.wifi.p2p.WifiP2pManager
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example.intercom_app/audio"
-    private var audioTrack: AudioTrack? = null
+    private val WIFI_DIRECT_CHANNEL = "com.example.intercom_app/wifidirect"
+    private val WIFI_DIRECT_EVENTS  = "com.example.intercom_app/wifidirect_events"
+
     private var audioManager: AudioManager? = null
     private var bluetoothHeadset: BluetoothHeadset? = null
     private var isBtActive = false
-    private var currentAudioLevel: Float = 0f
     private lateinit var wifiDirect: WifiDirectService
-    private val WIFI_DIRECT_CHANNEL = "com.example.intercom_app/wifidirect"
-    private val WIFI_DIRECT_EVENTS = "com.example.intercom_app/wifidirect_events"
-
-    // VOX
-    private var voxEnabled = false
-    private var voxThreshold = 500.0
-    private var callVolume = 1.0f
 
     private val headsetListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
@@ -50,46 +34,92 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        // Permitir ejecución con pantalla bloqueada
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
         super.configureFlutterEngine(flutterEngine)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         BluetoothAdapter.getDefaultAdapter()
             ?.getProfileProxy(this, headsetListener, BluetoothProfile.HEADSET)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        // ── Canal de sala (CallForegroundService) ──────
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            CallForegroundService.METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startPlayback" -> { startAudioCall(); result.success(null) }
-                    "playChunk" -> {
-                        val bytes = call.argument<ByteArray>("data")
-                        if (bytes != null) playChunk(bytes)
-                        result.success(null)
-                    }
-                    "stopPlayback" -> { stopAudioCall(); result.success(null) }
-                    "enableBluetooth" -> { enableBluetooth(); result.success(null) }
-                    "disableBluetooth" -> { disableBluetooth(); result.success(null) }
-                    "enableSpeaker" -> { enableSpeaker(); result.success(null) }
-                    "disableSpeaker" -> { disableSpeaker(); result.success(null) }
-                    "isBluetoothConnected" -> result.success(isBluetoothHeadsetConnected())
-                    "setVox" -> {
-                        voxEnabled = call.argument<Boolean>("enabled") ?: false
-                        voxThreshold = (call.argument<Double>("threshold") ?: 500.0)
-                        result.success(null)
-                    }
-                    "setVolume" -> {
-                        callVolume = (call.argument<Double>("volume") ?: 1.0).toFloat()
-                        result.success(null)
-                    }
-                    "startForegroundService" -> {
-                        val deviceName = call.argument<String>("deviceName") ?: "Dispositivo"
+                    "startCallWithService" -> {
                         val intent = Intent(this, CallForegroundService::class.java).apply {
                             action = CallForegroundService.ACTION_START
-                            putExtra("deviceName", deviceName)
+                            putExtra("deviceName", call.argument<String>("deviceName"))
+                            putExtra("myIp",       call.argument<String>("myIp"))
+                            putExtra("myName",     call.argument<String>("myName"))
+                            putExtra("myAvatar",   call.argument<String>("myAvatar") ?: "")
+                            putExtra("roomCode",   call.argument<String>("roomCode"))
                         }
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            startForegroundService(intent)
-                        } else {
-                            startService(intent)
+                        startForegroundServiceCompat(intent)
+                        result.success(null)
+                    }
+                    "stopCall" -> {
+                        sendCommandToService("stopCall")
+                        result.success(null)
+                    }
+                    "setGain" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setGain")
+                            putExtra("gain",
+                                call.argument<Double>("gain")?.toFloat() ?: 1.0f)
                         }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "setVox" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command",   "setVox")
+                            putExtra("enabled",   call.argument<Boolean>("enabled") ?: false)
+                            putExtra("threshold", call.argument<Double>("threshold") ?: 500.0)
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "setMuted" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setMuted")
+                            putExtra("muted", call.argument<Boolean>("muted") ?: false)
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "setMemberMuted" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setMemberMuted")
+                            putExtra("ip",    call.argument<String>("ip"))
+                            putExtra("muted", call.argument<Boolean>("muted") ?: false)
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "setMemberVolume" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setMemberVolume")
+                            putExtra("ip",     call.argument<String>("ip"))
+                            putExtra("volume",
+                                call.argument<Double>("volume")?.toFloat() ?: 1.0f)
+                        }
+                        startService(intent)
                         result.success(null)
                     }
                     "stopForegroundService" -> {
@@ -99,165 +129,90 @@ class MainActivity : FlutterActivity() {
                         startService(intent)
                         result.success(null)
                     }
-                    "getAudioLevel" -> {
-                        result.success(currentAudioLevel.toDouble())
-                    }
-                    "openHotspotSettings" -> {
-                        val intent = Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
-                        startActivity(intent)
-                        result.success(null)
-                    }   
+                    // Bluetooth y altavoz — se mantienen para la UI
+                    "enableBluetooth" -> { enableBluetooth(); result.success(null) }
+                    "disableBluetooth" -> { disableBluetooth(); result.success(null) }
+                    "enableSpeaker" -> { enableSpeaker(); result.success(null) }
+                    "disableSpeaker" -> { disableSpeaker(); result.success(null) }
+                    "isBluetoothConnected" ->
+                        result.success(isBluetoothHeadsetConnected())
                     else -> result.notImplemented()
                 }
             }
 
-            // WiFi Direct
-    wifiDirect = WifiDirectService(this, flutterEngine.dartExecutor.binaryMessenger
-        .let { MethodChannel(it, CHANNEL) })
-    wifiDirect.initialize()
-
-    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_CHANNEL)
-        .setMethodCallHandler { call, result ->
-            when (call.method) {
-                "discoverPeers" -> wifiDirect.discoverPeers(result)
-                "stopDiscovery" -> wifiDirect.stopDiscovery(result)
-                "connect" -> {
-                    val address = call.argument<String>("address") ?: ""
-                    wifiDirect.connect(address, result)
+        // ── EventChannel — sala ────────────────────────
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger,
+            CallForegroundService.EVENT_CHANNEL)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                    EventBus.setSink(sink)
                 }
-                "disconnect" -> wifiDirect.disconnect(result)
-                "createGroup" -> wifiDirect.createGroup(result)
-                "removeGroup" -> wifiDirect.removeGroup(result)
-                "requestGroupInfo" -> wifiDirect.requestGroupInfo(result)
-                else -> result.notImplemented()
-            }
-        }
+                override fun onCancel(args: Any?) {
+                    EventBus.setSink(null)
+                }
+            })
 
-    EventChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_EVENTS)
-        .setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
-                wifiDirect.setEventSink(sink)
+        // ── WiFi Direct ────────────────────────────────
+        wifiDirect = WifiDirectService(this,
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL))
+        wifiDirect.initialize()
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "discoverPeers"       -> wifiDirect.discoverPeers(result)
+                    "stopDiscovery"       -> wifiDirect.stopDiscovery(result)
+                    "connect"             -> {
+                        val address = call.argument<String>("address") ?: ""
+                        wifiDirect.connect(address, result)
+                    }
+                    "disconnect"          -> wifiDirect.disconnect(result)
+                    "createGroup"         -> wifiDirect.createGroup(result)
+                    "removeGroup"         -> wifiDirect.removeGroup(result)
+                    "requestGroupInfo"    -> wifiDirect.requestGroupInfo(result)
+                    "requestConnectedPeers" -> wifiDirect.requestConnectedPeers(result)
+                    "createGroupAndWait"  -> wifiDirect.createGroupAndWait(result)
+                    else -> result.notImplemented()
+                }
             }
-            override fun onCancel(args: Any?) {
-                wifiDirect.setEventSink(null)
-            }
-        })      
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_EVENTS)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(args: Any?, sink: EventChannel.EventSink?) {
+                    wifiDirect.setEventSink(sink)
+                }
+                override fun onCancel(args: Any?) {
+                    wifiDirect.setEventSink(null)
+                }
+            })
     }
 
+    // ── Bluetooth ──────────────────────────────────────
     private fun isBluetoothHeadsetConnected(): Boolean {
         val adapter = BluetoothAdapter.getDefaultAdapter() ?: return false
         return adapter.isEnabled &&
-            bluetoothHeadset?.connectedDevices?.isNotEmpty() == true
-    }
-
-    private fun startAudioCall() {
-        audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-
-        if (isBluetoothHeadsetConnected()) {
-            audioManager?.isSpeakerphoneOn = false
-            audioManager?.isBluetoothScoOn = true
-            audioManager?.startBluetoothSco()
-            isBtActive = true
-        } else {
-            audioManager?.isSpeakerphoneOn = true
-        }
-
-        val sampleRate = 16000
-        val bufferSize = AudioTrack.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(sampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-            )
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-        audioTrack?.play()
-        startAudioLevelMonitor()
-    }
-
-    private var audioLevelThread: Thread? = null
-    private var isRecording = false
-
-    private fun startAudioLevelMonitor() {
-        val sampleRate = 16000
-        val bufferSize = AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
-        isRecording = true
-        audioLevelThread = Thread {
-            try {
-                val audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize
-                )
-                val buffer = ShortArray(bufferSize)
-                audioRecord.startRecording()
-                while (isRecording) {
-                    val read = audioRecord.read(buffer, 0, bufferSize)
-                    if (read > 0) {
-                        var sum = 0.0
-                        for (i in 0 until read) sum += buffer[i] * buffer[i]
-                        val rms = sqrt(sum / read)
-                        currentAudioLevel = (rms.toFloat() / 8000f).coerceIn(0f, 1f)
-                    }
-                }
-                audioRecord.stop()
-                audioRecord.release()
-            } catch (_: Exception) {}
-        }
-        audioLevelThread?.start()
-    }
-
-    fun shouldTransmit(data: ByteArray): Boolean {
-        if (!voxEnabled) return true
-        var sum = 0.0
-        for (i in 0 until data.size - 1 step 2) {
-            val sample = (data[i].toInt() or (data[i + 1].toInt() shl 8)).toShort()
-            sum += sample * sample
-        }
-        val rms = sqrt(sum / (data.size / 2))
-        return rms > voxThreshold
+                bluetoothHeadset?.connectedDevices?.isNotEmpty() == true
     }
 
     private fun enableBluetooth() {
         if (isBluetoothHeadsetConnected()) {
-            audioManager?.isSpeakerphoneOn = false
-            audioManager?.isBluetoothScoOn = true
+            audioManager?.isSpeakerphoneOn  = false
+            audioManager?.isBluetoothScoOn  = true
             audioManager?.startBluetoothSco()
             isBtActive = true
         }
     }
 
     private fun disableBluetooth() {
-        audioManager?.isBluetoothScoOn = false
+        audioManager?.isBluetoothScoOn  = false
         audioManager?.stopBluetoothSco()
-        audioManager?.isSpeakerphoneOn = true
+        audioManager?.isSpeakerphoneOn  = true
         isBtActive = false
     }
 
     private fun enableSpeaker() {
         if (isBtActive) {
-            audioManager?.isBluetoothScoOn = false
+            audioManager?.isBluetoothScoOn  = false
             audioManager?.stopBluetoothSco()
             isBtActive = false
         }
@@ -268,45 +223,21 @@ class MainActivity : FlutterActivity() {
         audioManager?.isSpeakerphoneOn = false
     }
 
-    private val audioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
-
-    private fun playChunk(data: ByteArray) {
-        audioExecutor.execute {
-            val scaled = if (callVolume != 1.0f) {
-                val shorts = ShortArray(data.size / 2)
-                for (i in shorts.indices) {
-                    val s = (data[i * 2].toInt() or (data[i * 2 + 1].toInt() shl 8)).toShort()
-                    shorts[i] = (s * callVolume).toInt().coerceIn(-32768, 32767).toShort()
-                }
-                ByteArray(data.size).also { out ->
-                    for (i in shorts.indices) {
-                        out[i * 2] = (shorts[i].toInt() and 0xFF).toByte()
-                        out[i * 2 + 1] = (shorts[i].toInt() shr 8).toByte()
-                    }
-                }
-            } else data
-            audioTrack?.write(scaled, 0, scaled.size)
+    // ── Helpers ────────────────────────────────────────
+    private fun startForegroundServiceCompat(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
         }
     }
 
-
-    private fun stopAudioCall() {
-
-        isRecording = false
-        audioLevelThread?.interrupt()
-        audioLevelThread = null
-        currentAudioLevel = 0f
-
-        if (isBtActive) {
-            audioManager?.isBluetoothScoOn = false
-            audioManager?.stopBluetoothSco()
-            isBtActive = false
+    private fun sendCommandToService(command: String) {
+        val intent = Intent(this, CallForegroundService::class.java).apply {
+            action = CallForegroundService.ACTION_COMMAND
+            putExtra("command", command)
         }
-        audioManager?.isSpeakerphoneOn = false
-        audioManager?.mode = AudioManager.MODE_NORMAL
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
+        startService(intent)
     }
 
     override fun onDestroy() {
