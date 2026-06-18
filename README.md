@@ -9,9 +9,9 @@
 ## 📦 Descargas
 
 ### Última versión
-| Versión | Fecha | Descarga |
-|---------|-------|----------|
-| Latest | Ver [Releases](https://github.com/NesperouDelmonico/Intercom_CowTeam/releases/latest) | [app-debug.apk](https://github.com/NesperouDelmonico/Intercom_CowTeam/releases/latest/download/app-debug.apk) |
+| Versión | Descargas |
+|---------|-------|
+| Latest | Ver [Releases](https://github.com/NesperouDelmonico/Intercom_CowTeam/releases/latest) | 
 
 ### Historial de versiones
 Todas las versiones anteriores están disponibles en la sección de [Releases](https://github.com/NesperouDelmonico/Intercom_CowTeam/releases) del repositorio, cada una con su APK correspondiente.
