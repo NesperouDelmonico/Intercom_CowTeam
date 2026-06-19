@@ -37,7 +37,9 @@ class WifiDirectService(
             }
         }
         WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> {
+            android.util.Log.d("WifiDirectService", "WIFI_P2P_PEERS_CHANGED_ACTION recibido")
             manager.requestPeers(channel) { peerList ->
+              android.util.Log.d("WifiDirectService", "requestPeers callback: ${peerList.deviceList.size} dispositivos")
                 peers.clear()
                 peers.addAll(peerList.deviceList)
                 val list = peers.map {
@@ -62,10 +64,33 @@ class WifiDirectService(
                     if (info.isGroupOwner && onGroupReady != null) {
                         onGroupReady?.invoke(groupOwnerAddress)
                     }
-                    sendEvent("connected", mapOf(
-                        "isGroupOwner" to isGroupOwner,
-                        "groupOwnerAddress" to groupOwnerAddress
-                    ))
+
+                    // Obtener las direcciones MAC de los dispositivos
+                    // remotos del grupo, para que ambos lados (GO y
+                    // cliente) sepan exactamente con quién se conectaron.
+                    manager.requestGroupInfo(channel) { group ->
+                        val remoteAddresses = mutableListOf<String>()
+                        if (group != null) {
+                            if (info.isGroupOwner) {
+                                // Soy GO: los remotos son todos los clientes
+                                remoteAddresses.addAll(
+                                    group.clientList.map { it.deviceAddress }
+                                )
+                            } else {
+                                // Soy cliente: el remoto es el GO
+                                group.owner?.deviceAddress?.let {
+                                    remoteAddresses.add(it)
+                                }
+                            }
+                        }
+                        android.util.Log.d("WifiDirectService",
+                            "connected isGroupOwner=$isGroupOwner remoteAddresses=$remoteAddresses")
+                        sendEvent("connected", mapOf(
+                            "isGroupOwner" to isGroupOwner,
+                            "groupOwnerAddress" to groupOwnerAddress,
+                            "remoteAddresses" to remoteAddresses
+                        ))
+                    }
                 }
             } else {
                 sendEvent("disconnected", null)
@@ -95,9 +120,14 @@ class WifiDirectService(
     }
 
     fun discoverPeers(result: MethodChannel.Result) {
+        android.util.Log.d("WifiDirectService", "discoverPeers() llamado")
         manager.discoverPeers(channel, object : ActionListener {
-            override fun onSuccess() { result.success(null) }
+            override fun onSuccess() {
+                android.util.Log.d("WifiDirectService", "discoverPeers onSuccess")
+                result.success(null)
+            }
             override fun onFailure(reason: Int) {
+                android.util.Log.d("WifiDirectService", "discoverPeers onFailure reason=$reason")
                 result.error("DISCOVER_FAILED", "Error: $reason", null)
             }
         })
