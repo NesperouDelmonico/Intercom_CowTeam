@@ -31,11 +31,9 @@ class CallForegroundService : Service() {
     private var roomEngine:  RoomEngine?  = null
     private var soundEngine: SoundEngine? = null
 
-
     private var isCallActive    = false
     private var currentRoomCode = ""
 
-    //Sonidos de entrada y salida
     override fun onCreate() {
         super.onCreate()
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -104,6 +102,15 @@ class CallForegroundService : Service() {
                 val level = intent.getIntExtra("level", 1)
                 roomEngine?.setNoiseLevel(level)
             }
+            // ── Historial WiFi Direct para reconexión forzada ──
+            // Flutter envía la MAC del dispositivo WiFi Direct asociado
+            // a una IP de sala — se guarda en el RoomEngine para poder
+            // pedir una reconexión forzada si la señal se pierde.
+            "setMemberWifiDirectAddress" -> {
+                val ip      = intent.getStringExtra("ip")      ?: return
+                val address = intent.getStringExtra("address") ?: return
+                roomEngine?.setMemberWifiDirectAddress(ip, address)
+            }
             "stopCall" -> stopCall()
         }
     }
@@ -117,8 +124,6 @@ class CallForegroundService : Service() {
     ) {
         // Guard — si ya hay una llamada activa con el mismo código, ignorar
         if (isCallActive && currentRoomCode == roomCode) {
-            android.util.Log.d("CallService",
-                "startCall ignorado — ya activo con código $roomCode")
             return
         }
 
@@ -128,18 +133,11 @@ class CallForegroundService : Service() {
             roomEngine = null
             audioEngine?.stopPlayback()
             udpEngine?.stop()
-            // Recrear UdpEngine limpio
             udpEngine = UdpEngine()
         }
 
         isCallActive    = true
         currentRoomCode = roomCode
-        
-        //Sonido de entrada de participante
-        roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!)
-
-        android.util.Log.d("CallService",
-            "startCall myIp=$myIp roomCode=$roomCode")
 
         udpEngine?.start()
         roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!)
@@ -147,7 +145,6 @@ class CallForegroundService : Service() {
         roomEngine?.start(myIp, myName, myAvatar, roomCode)
 
         EventBus.send("callStarted", mapOf("roomCode" to roomCode))
-
     }
 
     // ── DETENER LLAMADA ────────────────────────────────
@@ -156,9 +153,13 @@ class CallForegroundService : Service() {
         isCallActive    = false
         currentRoomCode = ""
         roomEngine?.leave()
-        roomEngine = null
         audioEngine?.stopPlayback()
-        udpEngine?.stop()
+
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            udpEngine?.stop()
+            roomEngine = null
+        }, 300L)
+
         EventBus.send("callStopped", null)
     }
 

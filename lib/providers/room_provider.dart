@@ -35,8 +35,14 @@ class RoomNotifier extends Notifier<RoomState> {
   String _myIp = '';
   String _roomCode = '';
   bool _callActive = false; // guard contra doble llamada
+  // Evita disparar múltiples intentos de reconexión forzada en
+  // paralelo si el evento llega más de una vez.
+  bool _forceReconnectInProgress = false;
 
-  void Function(String, bool)? _memberEventCallback;
+  // El tercer parámetro (isSelf) indica si el evento es sobre el
+  // propio dispositivo — en ese caso la UI no debe mostrar texto,
+  // solo el sonido (ya manejado en RoomEngine nativo).
+  void Function(String name, bool joined, bool isSelf)? _memberEventCallback;
   void Function()? _hostClosedCallback;
 
   @override
@@ -50,7 +56,6 @@ class RoomNotifier extends Notifier<RoomState> {
   void _setupNativeCallbacks() {
     NativeBridge.onMembersChanged = (membersList) {
       final members = <String, RoomMember>{};
-
       for (final m in membersList) {
         final ip = m['ip'] as String;
         members[ip] = RoomMember(
@@ -64,23 +69,33 @@ class RoomNotifier extends Notifier<RoomState> {
         );
       }
       state = state.copyWith(members: members);
+
+      // Historial WiFi Direct — asociamos cada miembro remoto con
+      // las MACs WiFi Direct actualmente conectadas. No es un mapeo
+      // perfecto 1:1, pero da candidatos válidos para forzar la
+      // reconexión si la señal se pierde más adelante.
+      for (final ip in members.keys) {
+        if (ip == _myIp) continue;
+        for (final addr in _wifiDirect.connectedAddresses) {
+          NativeBridge.setMemberWifiDirectAddress(ip, addr);
+        }
+      }
     };
 
-    NativeBridge.onMemberJoined = (name, ip) {
-      _memberEventCallback?.call(name, true);
+    NativeBridge.onMemberJoined = (name, ip, isSelf) {
+      _memberEventCallback?.call(name, true, isSelf);
     };
 
     NativeBridge.onMemberLeft = (name, ip) {
-      _memberEventCallback?.call(name, false);
+      // La salida del propio dispositivo nunca llega por este
+      // camino (handleLeave es para los demás), así que isSelf
+      // siempre es false aquí.
+      _memberEventCallback?.call(name, false, false);
     };
 
     NativeBridge.onCallStopped = () {
       _callActive = false;
       _hostClosedCallback?.call();
-    };
-
-    NativeBridge.onCallStarted = (roomCode) {
-      print('DEBUG onCallStarted: roomCode=$roomCode estado=${state.status}');
     };
 
     NativeBridge.onSpeakingLevel = (ip, level) {
@@ -90,13 +105,40 @@ class RoomNotifier extends Notifier<RoomState> {
     NativeBridge.onConnectionLost = () {
       state = state.copyWith(isReconnecting: true);
     };
+
     NativeBridge.onConnectionRestored = () {
       state = state.copyWith(isReconnecting: false);
+      _forceReconnectInProgress = false;
+    };
+
+    // El banner "Reconectando" lleva demasiado tiempo activo —
+    // intentamos forzar la reconexión WiFi Direct con alguna de
+    // las MACs conocidas de la sala.
+    NativeBridge.onForceReconnectWifiDirect = (addresses) async {
+      if (_forceReconnectInProgress) return;
+      if (addresses.isEmpty) return;
+      _forceReconnectInProgress = true;
+
+      for (final address in addresses) {
+        try {
+          await _wifiDirect.connect(address);
+          // Si connect() no lanza excepción, asumimos éxito y
+          // dejamos que el resto del flujo normal (ANNOUNCE)
+          // confirme la reconexión real a la sala.
+          break;
+        } catch (_) {
+          // Intentar con la siguiente MAC conocida.
+          continue;
+        }
+      }
+
+      _forceReconnectInProgress = false;
     };
   }
 
-  void setMemberEventCallback(void Function(String, bool) cb) =>
-      _memberEventCallback = cb;
+  void setMemberEventCallback(
+    void Function(String name, bool joined, bool isSelf) cb,
+  ) => _memberEventCallback = cb;
 
   void setHostClosedCallback(void Function() cb) => _hostClosedCallback = cb;
 
@@ -157,11 +199,8 @@ class RoomNotifier extends Notifier<RoomState> {
 
   // ── CREAR SALA ─────────────────────────────────────
   Future<void> createRoom() async {
-    print('DEBUG createRoom: _callActive=$_callActive');
     if (_callActive) return; // evitar doble llamada
-    print('DEBUG createRoom: BLOQUEADO por guard');
     _callActive = true;
-    print('DEBUG createRoom: procediendo...');
 
     try {
       await _initName();
@@ -207,6 +246,7 @@ class RoomNotifier extends Notifier<RoomState> {
 
     try {
       await _initName();
+      await Future.delayed(const Duration(seconds: 2));
       _myIp = await _getMyIp();
       final avatar = await _loadAvatar();
 
@@ -413,9 +453,7 @@ class RoomNotifier extends Notifier<RoomState> {
   void setVox({required bool enabled, required double threshold}) =>
       NativeBridge.setVox(enabled: enabled, threshold: threshold);
 
-  Future<void> setNoiseLevel(int level) async {
-    await NativeBridge.setNoiseLevel(level);
-  }
+  Future<void> setNoiseLevel(int level) async {}
 
   void setLowPowerMode(bool v) {}
 
@@ -432,7 +470,6 @@ class RoomNotifier extends Notifier<RoomState> {
   Future<void> leaveRoom() async {
     _callActive = false;
     await NativeBridge.stopCall();
-    await NativeBridge.stopForegroundService();
     state = const RoomState();
     _roomCode = '';
   }

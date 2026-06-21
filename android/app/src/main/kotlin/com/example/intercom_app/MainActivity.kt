@@ -137,8 +137,20 @@ class MainActivity : FlutterActivity() {
                         }
                         startService(intent)
                         result.success(null)
-                    }  
-                
+                    }
+                    "setMemberWifiDirectAddress" -> {
+                        // Flutter envía la MAC WiFi Direct asociada a
+                        // una IP de sala, para poder forzar reconexión
+                        // si la señal se pierde por completo.
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setMemberWifiDirectAddress")
+                            putExtra("ip",      call.argument<String>("ip"))
+                            putExtra("address", call.argument<String>("address"))
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
                     // Bluetooth y altavoz — se mantienen para la UI
                     "enableBluetooth" -> { enableBluetooth(); result.success(null) }
                     "disableBluetooth" -> { disableBluetooth(); result.success(null) }

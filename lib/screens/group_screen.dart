@@ -21,6 +21,20 @@ class GroupScreen extends ConsumerStatefulWidget {
   ConsumerState<GroupScreen> createState() => _GroupScreenState();
 }
 
+class SpeakingLevelsNotifier extends Notifier<Map<String, double>> {
+  @override
+  Map<String, double> build() => {};
+
+  void update(String ip, double level) {
+    state = {...state, ip: level};
+  }
+}
+
+final speakingLevelsProvider =
+    NotifierProvider<SpeakingLevelsNotifier, Map<String, double>>(
+      SpeakingLevelsNotifier.new,
+    );
+
 class _GroupScreenState extends ConsumerState<GroupScreen> {
   Duration _elapsed = Duration.zero;
   Timer? _timer;
@@ -38,8 +52,17 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
       if (_callbackRegistered) return;
       _callbackRegistered = true;
 
-      ref.read(roomProvider.notifier).setMemberEventCallback((name, joined) {
+      ref.read(roomProvider.notifier).setMemberEventCallback((
+        name,
+        joined,
+        isSelf,
+      ) {
         if (!mounted) return;
+        if (isSelf) {
+          // Eventos sobre el propio dispositivo: el sonido ya se
+          // reprodujo en Kotlin — no mostramos texto en pantalla.
+          return;
+        }
         final msg = joined ? '$name se unió' : '$name se desconectó';
         setState(() => _notifications.add(msg));
         Future.delayed(const Duration(seconds: 3), () {
