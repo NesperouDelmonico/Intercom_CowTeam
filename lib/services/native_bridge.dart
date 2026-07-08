@@ -149,4 +149,9 @@ class NativeBridge {
       'address': address,
     });
   }
+
+  // Activa o desactiva el modo de bajo consumo en el servicio de llamada.
+  static Future<void> setLowPowerMode(bool enabled) async {
+    await _method.invokeMethod('setLowPowerMode', {'enabled': enabled});
+  }
 }

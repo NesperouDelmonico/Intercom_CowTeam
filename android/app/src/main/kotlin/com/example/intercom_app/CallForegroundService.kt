@@ -30,6 +30,7 @@ class CallForegroundService : Service() {
     private var udpEngine:   UdpEngine?   = null
     private var roomEngine:  RoomEngine?  = null
     private var soundEngine: SoundEngine? = null
+    private var mixerEngine: MixerEngine? = null
 
     private var isCallActive    = false
     private var currentRoomCode = ""
@@ -40,6 +41,7 @@ class CallForegroundService : Service() {
         audioEngine = AudioEngine(am)
         udpEngine   = UdpEngine()
         soundEngine = SoundEngine(this)
+        mixerEngine = MixerEngine(audioEngine!!)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -140,7 +142,7 @@ class CallForegroundService : Service() {
         currentRoomCode = roomCode
 
         udpEngine?.start()
-        roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!)
+        roomEngine = RoomEngine(udpEngine!!, audioEngine!!, soundEngine!!, mixerEngine!!)
         audioEngine?.startPlayback()
         roomEngine?.start(myIp, myName, myAvatar, roomCode)
 

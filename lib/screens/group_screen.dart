@@ -7,6 +7,7 @@ import 'package:intercom_app/models/room_state.dart';
 import 'package:intercom_app/providers/room_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:intercom_app/models/room_info.dart';
+import 'package:intercom_app/services/settings_service.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -21,25 +22,12 @@ class GroupScreen extends ConsumerStatefulWidget {
   ConsumerState<GroupScreen> createState() => _GroupScreenState();
 }
 
-class SpeakingLevelsNotifier extends Notifier<Map<String, double>> {
-  @override
-  Map<String, double> build() => {};
-
-  void update(String ip, double level) {
-    state = {...state, ip: level};
-  }
-}
-
-final speakingLevelsProvider =
-    NotifierProvider<SpeakingLevelsNotifier, Map<String, double>>(
-      SpeakingLevelsNotifier.new,
-    );
-
 class _GroupScreenState extends ConsumerState<GroupScreen> {
   Duration _elapsed = Duration.zero;
   Timer? _timer;
   final List<String> _notifications = [];
   bool _callbackRegistered = false;
+  bool _lowPowerMode = false;
 
   @override
   void initState() {
@@ -92,6 +80,26 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
     return '$m:$s';
   }
 
+  void _toggleLowPower() {
+    final newVal = !_lowPowerMode;
+    setState(() => _lowPowerMode = newVal);
+    ref.read(roomProvider.notifier).setLowPowerMode(newVal);
+
+    // Controlar brillo de pantalla
+    if (newVal) {
+      SystemChrome.setSystemUIOverlayStyle(
+        const SystemUiOverlayStyle(statusBarBrightness: Brightness.dark),
+      );
+      // Bajar brillo al 10%
+      const platform = MethodChannel('com.example.intercom_app/audio');
+      platform.invokeMethod('setBrightness', {'brightness': 0.1});
+    } else {
+      // Restaurar brillo automático
+      const platform = MethodChannel('com.example.intercom_app/audio');
+      platform.invokeMethod('setBrightness', {'brightness': -1.0});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final room = ref.watch(roomProvider);
@@ -126,13 +134,19 @@ class _GroupScreenState extends ConsumerState<GroupScreen> {
             : const Text('Sala grupal'),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios, color: _cyan),
-          onPressed: () async {
-            if (isActive) await notifier.leaveRoom();
-            if (context.mounted) Navigator.pop(context);
-          },
+          onPressed: () => Navigator.pop(context),
         ),
         actions: isActive
             ? [
+                // Botón modo ahorro de energía
+                IconButton(
+                  icon: Icon(
+                    Icons.battery_saver,
+                    color: _lowPowerMode ? const Color(0xFFFFAA00) : _muted,
+                  ),
+                  onPressed: _toggleLowPower,
+                  tooltip: _lowPowerMode ? 'Modo ahorro activo' : 'Modo ahorro',
+                ),
                 IconButton(
                   icon: Icon(
                     room.globalMuted ? Icons.mic_off : Icons.mic_none,
@@ -480,7 +494,8 @@ class _MemberCardState extends ConsumerState<_MemberCard> {
   @override
   Widget build(BuildContext context) {
     final m = widget.member;
-    final level = ref.watch(speakingLevelsProvider)[m.ip] ?? 0.0;
+    final levels = ref.watch(speakingLevelsProvider);
+    final level = levels[m.ip] ?? 0.0
     final isSpeaking = level > 0.08 && !m.isMuted;
     final initials = m.name.length >= 2
         ? m.name.substring(0, 2).toUpperCase()
@@ -627,10 +642,10 @@ class _MemberCardState extends ConsumerState<_MemberCard> {
                 duration: const Duration(milliseconds: 80),
                 height: 3,
                 child: LinearProgressIndicator(
-                  value: m.isMuted ? 0 : m.speakingLevel,
+                  value: m.isMuted ? 0 : level.clamp(0.0, 1.0),
                   backgroundColor: _border,
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    m.speakingLevel > 0.7 ? const Color(0xFFFF4444) : _cyan,
+                    level > 0.7 ? const Color(0xFFFF4444) : _cyan,
                   ),
                   minHeight: 3,
                 ),
@@ -969,6 +984,27 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
   bool _expanded = false;
 
   @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final voxEnabled = await SettingsService.getVoxEnabled();
+    final voxThreshold = await SettingsService.getVoxThreshold();
+    final noiseLevel = await SettingsService.getNoiseLevel();
+    final micGain = await SettingsService.getMicGain();
+    if (mounted) {
+      setState(() {
+        _voxEnabled = voxEnabled;
+        _voxThreshold = voxThreshold;
+        _noiseLevel = noiseLevel;
+        _micGain = micGain;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -1049,6 +1085,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                                 enabled: newVal,
                                 threshold: _voxThreshold,
                               );
+                          SettingsService.setVoxEnabled(newVal);
                         },
                         child: Container(
                           width: 44,
@@ -1102,6 +1139,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                           ref
                               .read(roomProvider.notifier)
                               .setVox(enabled: _voxEnabled, threshold: v);
+                          SettingsService.setVoxThreshold(v);
                         },
                       ),
                     ),
@@ -1134,6 +1172,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                       onChanged: (v) {
                         setState(() => _micGain = v);
                         ref.read(roomProvider.notifier).setMicGain(v);
+                        SettingsService.setMicGain(v);
                       },
                     ),
                   ),
@@ -1160,6 +1199,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                         onTap: () {
                           setState(() => _noiseLevel = 0);
                           ref.read(roomProvider.notifier).setNoiseLevel(0);
+                          SettingsService.setNoiseLevel(0);
                         },
                       ),
                       _NoiseBtn(
@@ -1168,6 +1208,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                         onTap: () {
                           setState(() => _noiseLevel = 1);
                           ref.read(roomProvider.notifier).setNoiseLevel(1);
+                          SettingsService.setNoiseLevel(1);
                         },
                       ),
                       _NoiseBtn(
@@ -1176,6 +1217,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                         onTap: () {
                           setState(() => _noiseLevel = 2);
                           ref.read(roomProvider.notifier).setNoiseLevel(2);
+                          SettingsService.setNoiseLevel(2);
                         },
                       ),
                       _NoiseBtn(
@@ -1184,6 +1226,7 @@ class _AudioSettingsPanelState extends ConsumerState<_AudioSettingsPanel> {
                         onTap: () {
                           setState(() => _noiseLevel = 3);
                           ref.read(roomProvider.notifier).setNoiseLevel(3);
+                          SettingsService.setNoiseLevel(3);
                         },
                       ),
                     ],

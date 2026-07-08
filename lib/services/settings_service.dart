@@ -56,4 +56,50 @@ class SettingsService {
     final p = await SharedPreferences.getInstance();
     await p.setBool(_keyKeepScreen, value);
   }
+
+  static const _keyVoxEnabled = 'vox_enabled';
+  static const _keyVoxThreshold = 'vox_threshold';
+  static const _keyNoiseLevel = 'noise_level';
+
+  static Future<bool> getVoxEnabled() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getBool(_keyVoxEnabled) ?? false;
+  }
+
+  static Future<void> setVoxEnabled(bool value) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_keyVoxEnabled, value);
+  }
+
+  static Future<double> getVoxThreshold() async {
+    final p = await SharedPreferences.getInstance();
+    return (p.getInt(_keyVoxThreshold) ?? 500).toDouble();
+  }
+
+  static Future<void> setVoxThreshold(double value) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt(_keyVoxThreshold, value.toInt());
+  }
+
+  static Future<int> getNoiseLevel() async {
+    final p = await SharedPreferences.getInstance();
+    return p.getInt(_keyNoiseLevel) ?? 1; // 1 = Medio por defecto
+  }
+
+  static Future<void> setNoiseLevel(int value) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt(_keyNoiseLevel, value);
+  }
+
+  static const _keyMicGain = 'mic_gain';
+
+  static Future<double> getMicGain() async {
+    final p = await SharedPreferences.getInstance();
+    return (p.getInt(_keyMicGain) ?? 100) / 100.0;
+  }
+
+  static Future<void> setMicGain(double value) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt(_keyMicGain, (value * 100).toInt());
+  }
 }

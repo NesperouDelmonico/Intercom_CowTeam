@@ -1,18 +1,19 @@
 import 'dart:io';
+import 'dart:io' as io;
 import 'dart:convert';
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intercom_app/models/room_info.dart';
 import 'package:intercom_app/models/room_state.dart';
 import 'package:intercom_app/providers/settings_provider.dart';
 import 'package:intercom_app/services/native_bridge.dart';
+import 'package:intercom_app/services/settings_service.dart';
 import 'package:intercom_app/services/wifi_direct_service.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:io' as io;
-import 'dart:math';
 
 final _wifiDirect = WifiDirectService();
 
@@ -227,12 +228,21 @@ class RoomNotifier extends Notifier<RoomState> {
         myAvatar: avatar ?? '',
         roomCode: _roomCode,
       );
-
       state = state.copyWith(
         status: RoomStatus.hosting,
         roomCode: _roomCode,
         isHost: true,
       );
+
+      try {
+        final settings = await ref.read(settingsProvider.future);
+        await NativeBridge.setNoiseLevel(settings.noiseLevel);
+        await NativeBridge.setVox(
+          enabled: settings.voxEnabled,
+          threshold: settings.voxThreshold,
+        );
+        await NativeBridge.setGain(settings.micGain); // ← también ganancia
+      } catch (_) {}
     } catch (e) {
       _callActive = false; // resetear si falla
       rethrow;
@@ -259,6 +269,16 @@ class RoomNotifier extends Notifier<RoomState> {
       );
 
       state = state.copyWith(status: RoomStatus.joined, isHost: false);
+
+      try {
+        final settings = await ref.read(settingsProvider.future);
+        await NativeBridge.setNoiseLevel(settings.noiseLevel);
+        await NativeBridge.setVox(
+          enabled: settings.voxEnabled,
+          threshold: settings.voxThreshold,
+        );
+        await NativeBridge.setGain(settings.micGain); // ← también ganancia
+      } catch (_) {}
     } catch (e) {
       _callActive = false;
       rethrow;
@@ -453,9 +473,21 @@ class RoomNotifier extends Notifier<RoomState> {
   void setVox({required bool enabled, required double threshold}) =>
       NativeBridge.setVox(enabled: enabled, threshold: threshold);
 
-  Future<void> setNoiseLevel(int level) async {}
+  Future<void> setNoiseLevel(int level) async {
+    await NativeBridge.setNoiseLevel(level);
+  }
 
-  void setLowPowerMode(bool v) {}
+  void setLowPowerMode(bool enabled) {
+    NativeBridge.setLowPowerMode(enabled);
+    if (!enabled) {
+      // Restaurar configuraciones guardadas del usuario
+      SettingsService.getVoxEnabled().then((voxEnabled) {
+        SettingsService.getVoxThreshold().then((voxThreshold) {
+          NativeBridge.setVox(enabled: voxEnabled, threshold: voxThreshold);
+        });
+      });
+    }
+  }
 
   Future<bool> hasNetworkConnection() async {
     try {

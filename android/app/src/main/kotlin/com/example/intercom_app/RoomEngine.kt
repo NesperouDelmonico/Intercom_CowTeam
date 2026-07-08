@@ -46,6 +46,7 @@ class RoomEngine(
     private val udp: UdpEngine,
     private val audio: AudioEngine,
     private val sound: SoundEngine,
+    private val mixer: MixerEngine,
 ) {
     companion object {
         const val MEMBER_TIMEOUT_MS  = 3_000L  // tolera ~3 anuncios perdidos
@@ -78,6 +79,9 @@ class RoomEngine(
 
     private val members = ConcurrentHashMap<String, RoomMemberNative>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    // Último momento en que se emitió speakingLevel por IP, para
+    // limitar la frecuencia de eventos hacia Flutter (throttling).
+    private val lastLevelEmit = ConcurrentHashMap<String, Long>()
 
     private var myIp      = ""
     private var myName    = ""
@@ -148,22 +152,32 @@ class RoomEngine(
             if (targets.isNotEmpty()) udp.sendAudio(chunk, targets)
         }
         audio.startCapture()
+        mixer.start()
 
         notifyMembersChanged()
     }
 
     // ── RECEPTORES UDP ─────────────────────────────────
     private fun setupUdpCallbacks() {
-        udp.onAudioReceived = { data, fromIp ->
+        udp.onAudioReceived = { data, fromIp, timestamp ->
             val member = members[fromIp]
             if (member != null && !member.isMuted) {
                 val level = calculateRms(data)
                 member.speakingLevel = level
                 member.lastSeen      = System.currentTimeMillis()
                 member.isOnline      = true
-                audio.playChunk(data, member.volume)
-                EventBus.send("speakingLevel",
-                    mapOf("ip" to fromIp, "level" to level))
+                mixer.push(fromIp, timestamp, data)
+
+                // Emitir el nivel de voz como máximo cada ~100ms —
+                // enviarlo en cada chunk (cada 20ms) satura el
+                // EventChannel de Flutter y la UI deja de actualizarse.
+                val now = System.currentTimeMillis()
+                val lastEmit = lastLevelEmit[fromIp] ?: 0L
+                if (now - lastEmit >= 100L) {
+                    lastLevelEmit[fromIp] = now
+                    EventBus.send("speakingLevel",
+                        mapOf("ip" to fromIp, "level" to level))
+                }
             }
         }
 
@@ -196,12 +210,10 @@ class RoomEngine(
         member.isOnline      = false
         member.offlineSince  = null
         member.leftConfirmed = true
-        // Ignorar cualquier ANNOUNCE residual de esta IP durante los
-        // próximos segundos — evita que paquetes ya en tránsito
-        // generen un rebote entrada/salida tras el LEAVE explícito.
         member.ignoreAnnouncesUntil =
             System.currentTimeMillis() + IGNORE_AFTER_LEAVE_MS
 
+        mixer.removeMember(fromIp)
         sound.playLeave()
         EventBus.send("memberLeft", mapOf("name" to member.name, "ip" to member.ip))
         notifyMembersChanged()
@@ -245,12 +257,6 @@ class RoomEngine(
 
         val isNew      = existing == null
         val wasOffline = existing?.isOnline == false
-
-        android.util.Log.d("RoomEngine",
-            "ANNOUNCE ip=$ip isNew=$isNew wasOffline=$wasOffline " +
-            "leftConfirmed=${existing?.leftConfirmed} " +
-            "pendingReconnect=${existing?.pendingReconnectSince} " +
-            "isOnline=${existing?.isOnline}")
 
         // ¿Estamos todavía dentro de la ventana de gracia de nuestra
         // propia entrada a la sala? Si es así, no se debe notificar
@@ -586,6 +592,7 @@ class RoomEngine(
         announceTimer?.cancel()
         timeoutTimer?.cancel()
         audio.stopCapture()
+        mixer.stop()
         members.clear()
     }
 }

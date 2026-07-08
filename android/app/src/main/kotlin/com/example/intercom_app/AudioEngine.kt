@@ -173,6 +173,19 @@ class AudioEngine(private val audioManager: AudioManager) {
     track.write(scaled, 0, scaled.size)
     }
 
+    // Escritura bloqueante para el MixerEngine — write() en modo
+    // WRITE_BLOCKING espera de forma natural cuando el buffer del
+    // AudioTrack está lleno. Ese bloqueo sincroniza el ritmo del
+    // hilo del mixer con la tasa real de reproducción del hardware,
+    // actuando como el "reloj" del sistema de audio (sin sleeps ni
+    // schedulers externos que causan huecos en Android).
+    fun writeBlocking(data: ByteArray) {
+        val track = audioTrack ?: return
+        try {
+            track.write(data, 0, data.size, AudioTrack.WRITE_BLOCKING)
+        } catch (_: Exception) {}
+    }
+
     fun stopPlayback() {
         audioManager.isSpeakerphoneOn = false
         audioManager.isBluetoothScoOn = false

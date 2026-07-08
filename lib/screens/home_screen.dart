@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intercom_app/models/room_state.dart';
+import 'package:intercom_app/providers/room_provider.dart';
 import 'package:intercom_app/providers/settings_provider.dart';
 import 'package:intercom_app/screens/discovery_screen.dart';
 import 'package:intercom_app/screens/group_screen.dart';
@@ -36,7 +38,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   void dispose() {
-    // No hacemos dispose del singleton aquí — vive durante toda la app.
     super.dispose();
   }
 
@@ -65,12 +66,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (mounted) setState(() {});
   }
 
+  void _goToRoom() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const GroupScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final deviceName = settings.value?.deviceName ?? 'Mi dispositivo';
     final avatarPath = settings.value?.avatarPath;
     final connectedCount = _wifiDirect.connectedAddresses.length;
+    final room = ref.watch(roomProvider);
+    final isCallActive = room.status != RoomStatus.idle;
 
     return Scaffold(
       backgroundColor: _bg,
@@ -102,31 +112,120 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           child: Container(height: 0.5, color: _border),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 8),
-
-            _ProfileCard(deviceName: deviceName, avatarPath: avatarPath),
-            const SizedBox(height: 12),
-
-            _ConnectButton(
-              connectedCount: connectedCount,
-              onConnect: _goToDiscovery,
+      body: Stack(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: 8),
+                _ProfileCard(deviceName: deviceName, avatarPath: avatarPath),
+                const SizedBox(height: 12),
+                _ConnectButton(
+                  connectedCount: connectedCount,
+                  onConnect: _goToDiscovery,
+                ),
+                const SizedBox(height: 12),
+                _RoomButton(onTap: _goToRoom),
+              ],
             ),
+          ),
 
-            const SizedBox(height: 12),
-
-            _RoomButton(
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const GroupScreen()),
+          // ── Burbuja de llamada activa ──────────────────
+          // Visible solo cuando hay una sala activa y el usuario
+          // volvió a home_screen sin cerrar la llamada.
+          if (isCallActive)
+            Positioned(
+              right: 0,
+              top: MediaQuery.of(context).size.height * 0.35,
+              child: GestureDetector(
+                onTap: _goToRoom,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: room.isReconnecting
+                            ? const Color(0xFFCC8800)
+                            : _cyan,
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(16),
+                          bottomLeft: Radius.circular(16),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: room.isReconnecting
+                                ? const Color(0xFFCC8800).withOpacity(0.4)
+                                : _cyan.withOpacity(0.4),
+                            blurRadius: 12,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            room.isReconnecting
+                                ? Icons.wifi_off
+                                : Icons.phone_in_talk,
+                            color: const Color(0xFF001830),
+                            size: 22,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            room.roomCode ?? '',
+                            style: const TextStyle(
+                              color: Color(0xFF001830),
+                              fontSize: 8,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Badge contador de miembros
+                    Positioned(
+                      top: -6,
+                      left: -6,
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        constraints: const BoxConstraints(
+                          minWidth: 22,
+                          minHeight: 22,
+                        ),
+                        decoration: BoxDecoration(
+                          color: _bg,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: room.isReconnecting
+                                ? const Color(0xFFCC8800)
+                                : _cyan,
+                            width: 1.5,
+                          ),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${room.members.values.where((m) => m.isOnline).length}',
+                            style: TextStyle(
+                              color: room.isReconnecting
+                                  ? const Color(0xFFCC8800)
+                                  : _cyan,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -188,7 +287,7 @@ class _ProfileCard extends StatelessWidget {
   }
 }
 
-// ── Botón conectar — muestra contador de conectados ────────
+// ── Botón conectar ─────────────────────────────────────────
 class _ConnectButton extends StatelessWidget {
   final int connectedCount;
   final VoidCallback onConnect;

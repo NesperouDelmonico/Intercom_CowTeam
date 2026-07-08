@@ -138,6 +138,22 @@ class MainActivity : FlutterActivity() {
                         startService(intent)
                         result.success(null)
                     }
+                    "setLowPowerMode" -> {
+                        val intent = Intent(this, CallForegroundService::class.java).apply {
+                            action = CallForegroundService.ACTION_COMMAND
+                            putExtra("command", "setLowPowerMode")
+                            putExtra("enabled", call.argument<Boolean>("enabled") ?: false)
+                        }
+                        startService(intent)
+                        result.success(null)
+                    }
+                    "setBrightness" -> {
+                        val brightness = call.argument<Double>("brightness")?.toFloat() ?: -1f
+                        val lp = window.attributes
+                        lp.screenBrightness = brightness
+                        window.attributes = lp
+                        result.success(null)
+                    }
                     "setMemberWifiDirectAddress" -> {
                         // Flutter envía la MAC WiFi Direct asociada a
                         // una IP de sala, para poder forzar reconexión

@@ -4,7 +4,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.Executors
-import java.net.NetworkInterface
 
 class UdpEngine {
 
@@ -27,7 +26,7 @@ class UdpEngine {
 
     private var isRunning = false
 
-    var onAudioReceived:    ((ByteArray, String) -> Unit)? = null
+    var onAudioReceived:    ((ByteArray, String, Long) -> Unit)? = null
     var onSignalReceived:   ((String, String) -> Unit)? = null
     var onAnnounceReceived: ((String, String) -> Unit)? = null
 
@@ -44,9 +43,9 @@ class UdpEngine {
         try { audioSocket    = DatagramSocket(AUDIO_PORT)    } catch (_: Exception) {}
         try { signalSocket   = DatagramSocket(SIGNAL_PORT)   } catch (_: Exception) {}
         try {
-                announceSocket = DatagramSocket(ANNOUNCE_PORT)
-                announceSocket?.broadcast = true
-            } catch (_: Exception) {}
+            announceSocket = DatagramSocket(ANNOUNCE_PORT)
+            announceSocket?.broadcast = true
+        } catch (_: Exception) {}
 
         startAudioReceiver()
         startSignalReceiver()
@@ -55,15 +54,26 @@ class UdpEngine {
 
     // ── RECEPTORES ─────────────────────────────────────
     private fun startAudioReceiver() {
-        val buffer = ByteArray(2048)
+        // Formato del paquete de audio:
+        // [0..7]  = timestamp Long (8 bytes, big-endian)
+        // [8..]   = datos PCM16
+        val buffer = ByteArray(2048 + 8)
         audioReceiveThread = Thread {
             while (isRunning) {
                 try {
                     val packet = DatagramPacket(buffer, buffer.size)
                     audioSocket?.receive(packet) ?: break
-                    val data   = packet.data.copyOf(packet.length)
+                    val raw    = packet.data.copyOf(packet.length)
                     val fromIp = packet.address.hostAddress ?: continue
-                    onAudioReceived?.invoke(data, fromIp)
+
+                    if (raw.size < 8) continue
+
+                    // Extraer timestamp de los primeros 8 bytes
+                    var ts = 0L
+                    for (b in 0..7) ts = (ts shl 8) or (raw[b].toLong() and 0xFF)
+
+                    val data = raw.copyOfRange(8, raw.size)
+                    onAudioReceived?.invoke(data, fromIp, ts)
                 } catch (_: Exception) {
                     if (!isRunning) break
                 }
@@ -117,12 +127,21 @@ class UdpEngine {
     }
 
     fun sendAudio(data: ByteArray, targetIps: List<String>) {
+        // Prefijar el timestamp de captura (8 bytes big-endian)
+        // para que el MixerEngine pueda sincronizar fuentes múltiples.
+        val ts     = System.currentTimeMillis()
+        val header = ByteArray(8)
+        for (b in 7 downTo 0) {
+            header[b] = (ts shr ((7 - b) * 8)).toByte()
+        }
+        val packet = header + data
+
         safeExecute {
             for (ip in targetIps) {
                 try {
                     val address = InetAddress.getByName(ip)
-                    val packet  = DatagramPacket(data, data.size, address, AUDIO_PORT)
-                    audioSocket?.send(packet)
+                    val dgram   = DatagramPacket(packet, packet.size, address, AUDIO_PORT)
+                    audioSocket?.send(dgram)
                 } catch (_: Exception) {}
             }
         }

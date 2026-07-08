@@ -11,14 +11,21 @@ class AppSettings {
   final bool noiseSuppress;
   final bool echoCancel;
   final bool keepScreen;
-
+  final bool voxEnabled;
+  final double voxThreshold;
+  final int noiseLevel;
+  final double micGain;
   const AppSettings({
     required this.deviceName,
     required this.port,
+    this.micGain = 1.0,
     this.avatarPath,
     this.noiseSuppress = true,
     this.echoCancel = true,
     this.keepScreen = true,
+    this.voxEnabled = false,
+    this.voxThreshold = 500.0,
+    this.noiseLevel = 1,
   });
 }
 
@@ -39,6 +46,10 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     final dir = await getApplicationDocumentsDirectory();
     final avatarFile = File('${dir.path}/avatar.jpg');
     final avatar = avatarFile.existsSync() ? avatarFile.path : null;
+    final voxEnabled = await SettingsService.getVoxEnabled();
+    final voxThreshold = await SettingsService.getVoxThreshold();
+    final noiseLevel = await SettingsService.getNoiseLevel();
+    final micGain = await SettingsService.getMicGain();
 
     return AppSettings(
       deviceName: name,
@@ -47,6 +58,10 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       noiseSuppress: noise,
       echoCancel: echo,
       keepScreen: screen,
+      voxEnabled: voxEnabled,
+      voxThreshold: voxThreshold,
+      noiseLevel: noiseLevel,
+      micGain: micGain,
     );
   }
 
