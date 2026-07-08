@@ -495,7 +495,7 @@ class _MemberCardState extends ConsumerState<_MemberCard> {
   Widget build(BuildContext context) {
     final m = widget.member;
     final levels = ref.watch(speakingLevelsProvider);
-    final level = levels[m.ip] ?? 0.0
+    final level = levels[m.ip] ?? 0.0;
     final isSpeaking = level > 0.08 && !m.isMuted;
     final initials = m.name.length >= 2
         ? m.name.substring(0, 2).toUpperCase()
