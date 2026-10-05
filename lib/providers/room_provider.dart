@@ -67,6 +67,7 @@ class RoomNotifier extends Notifier<RoomState> {
           speakingLevel: (m['speakingLevel'] as num?)?.toDouble() ?? 0.0,
           avatarBase64: m['avatarBase64'] as String?,
           isOnline: m['isOnline'] as bool? ?? true,
+          signalQuality: (m['signalQuality'] as num?)?.toInt() ?? 3,
         );
       }
       state = state.copyWith(members: members);

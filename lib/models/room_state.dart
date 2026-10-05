@@ -10,6 +10,8 @@ class RoomMember {
   double speakingLevel;
   String? avatarBase64;
   bool isOnline;
+  // Calidad de señal 0-3 (0 = sin señal, 3 = buena), calculada en Kotlin.
+  int signalQuality;
   DateTime lastSeen;
 
   RoomMember({
@@ -20,6 +22,7 @@ class RoomMember {
     this.speakingLevel = 0.0,
     this.avatarBase64,
     this.isOnline = true,
+    this.signalQuality = 3,
   }) : lastSeen = DateTime.now();
 }
 

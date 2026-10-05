@@ -75,6 +75,8 @@ class RoomEngine(
         // antes de apagar el banner — filtra parpadeos momentáneos
         // que de otro modo reiniciarían el contador de FORCE_RECONNECT.
         const val BANNER_OFF_STABILITY_MS = 2_000L
+        // Ventana deslizante para estimar la calidad de señal por miembro.
+        const val SIGNAL_WINDOW_MS = 5_000L
     }
 
     private val members = ConcurrentHashMap<String, RoomMemberNative>()
@@ -82,6 +84,18 @@ class RoomEngine(
     // Último momento en que se emitió speakingLevel por IP, para
     // limitar la frecuencia de eventos hacia Flutter (throttling).
     private val lastLevelEmit = ConcurrentHashMap<String, Long>()
+
+    // ── Calidad de señal por miembro ────────────────
+    // Instantes de los ANNOUNCEs recibidos dentro de SIGNAL_WINDOW_MS.
+    private val announceHistory = ConcurrentHashMap<String, ArrayDeque<Long>>()
+    // Desde cuándo se observa a cada miembro (para no penalizar a quien
+    // acaba de entrar y aún no completó una ventana).
+    private val signalSince = ConcurrentHashMap<String, Long>()
+    // Último score calculado, para emitir a Flutter solo si cambia.
+    private val signalScores = ConcurrentHashMap<String, Int>()
+    // Intervalo con el que se emiten los ANNOUNCE. Hoy es fijo; si algún
+    // día el modo ahorro lo cambia, el cálculo se adapta solo.
+    @Volatile private var announceIntervalMs = ANNOUNCE_MS
 
     private var myIp      = ""
     private var myName    = ""
@@ -214,6 +228,8 @@ class RoomEngine(
             System.currentTimeMillis() + IGNORE_AFTER_LEAVE_MS
 
         mixer.removeMember(fromIp)
+        announceHistory.remove(fromIp)
+        signalSince.remove(fromIp)
         sound.playLeave()
         EventBus.send("memberLeft", mapOf("name" to member.name, "ip" to member.ip))
         notifyMembersChanged()
@@ -254,6 +270,8 @@ class RoomEngine(
             val now = System.currentTimeMillis()
             if (now < existing.ignoreAnnouncesUntil) return
         }
+
+        recordAnnounce(ip)
 
         val isNew      = existing == null
         val wasOffline = existing?.isOnline == false
@@ -423,6 +441,9 @@ class RoomEngine(
                         }
                     }
                 }
+                // El score depende del tiempo transcurrido, así que se
+                // recalcula cada ciclo, pero solo se emite si cambió.
+                if (refreshSignalScores()) changed = true
                 if (changed) notifyMembersChanged()
                 checkReconnectionBanner()
             }
@@ -564,6 +585,56 @@ class RoomEngine(
         return (rms / 8000.0).toFloat().coerceIn(0f, 1f)
     }
 
+    // ── CALIDAD DE SEÑAL ───────────────────────────────
+    private fun recordAnnounce(ip: String) {
+        val now = System.currentTimeMillis()
+        signalSince.putIfAbsent(ip, now)
+        val dq = announceHistory.getOrPut(ip) { ArrayDeque() }
+        synchronized(dq) {
+            // Cada ciclo de un miembro llega duplicado (broadcast + unicast
+            // directo, ver sendAnnounceBroadcast). Colapsamos esa pareja para
+            // contar ciclos reales; si no, la tasa saturaría siempre en 100 %.
+            val last = dq.lastOrNull()
+            if (last == null || now - last >= announceIntervalMs / 2) {
+                dq.addLast(now)
+            }
+            while (dq.isNotEmpty() && now - dq.first() > SIGNAL_WINDOW_MS) {
+                dq.removeFirst()
+            }
+        }
+    }
+
+    private fun computeSignalQuality(member: RoomMemberNative): Int {
+        if (!member.isOnline) return 0
+        val now = System.currentTimeMillis()
+        val dq = announceHistory[member.ip]
+        val received = if (dq == null) 0 else synchronized(dq) {
+            while (dq.isNotEmpty() && now - dq.first() > SIGNAL_WINDOW_MS) {
+                dq.removeFirst()
+            }
+            dq.size
+        }
+        val observed = minOf(SIGNAL_WINDOW_MS, now - (signalSince[member.ip] ?: now))
+        return SignalScorer.score(
+            elapsedMs  = now - member.lastSeen,
+            received   = received,
+            observedMs = observed,
+            intervalMs = announceIntervalMs,
+            timeoutMs  = MEMBER_TIMEOUT_MS,
+        )
+    }
+
+    // Recalcula los scores; devuelve true si alguno cambió.
+    private fun refreshSignalScores(): Boolean {
+        var changed = false
+        for (m in members.values) {
+            // Hacia uno mismo no hay "señal" que medir.
+            val s = if (m.ip == myIp) 3 else computeSignalQuality(m)
+            if (signalScores.put(m.ip, s) != s) changed = true
+        }
+        return changed
+    }
+
     private fun notifyMembersChanged() {
         val list = members.values.map { m ->
             mapOf<String, Any?>(
@@ -574,6 +645,7 @@ class RoomEngine(
                 "volume"        to m.volume.toDouble(),
                 "speakingLevel" to m.speakingLevel.toDouble(),
                 "isOnline"      to m.isOnline,
+                "signalQuality" to (signalScores[m.ip] ?: 3),
             )
         }
         EventBus.send("membersChanged", list)
@@ -594,5 +666,8 @@ class RoomEngine(
         audio.stopCapture()
         mixer.stop()
         members.clear()
+        announceHistory.clear()
+        signalSince.clear()
+        signalScores.clear()
     }
 }

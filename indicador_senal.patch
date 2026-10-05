@@ -1,0 +1,430 @@
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index ebe9e42..cc6d60d 100644
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -43,3 +43,7 @@ kotlin {
+ flutter {
+     source = "../.."
+ }
++
++dependencies {
++    testImplementation("junit:junit:4.13.2")
++}
+diff --git a/android/app/src/main/kotlin/com/example/intercom_app/RoomEngine.kt b/android/app/src/main/kotlin/com/example/intercom_app/RoomEngine.kt
+index 6f3ed22..68213f7 100644
+--- a/android/app/src/main/kotlin/com/example/intercom_app/RoomEngine.kt
++++ b/android/app/src/main/kotlin/com/example/intercom_app/RoomEngine.kt
+@@ -75,6 +75,8 @@ class RoomEngine(
+         // antes de apagar el banner — filtra parpadeos momentáneos
+         // que de otro modo reiniciarían el contador de FORCE_RECONNECT.
+         const val BANNER_OFF_STABILITY_MS = 2_000L
++        // Ventana deslizante para estimar la calidad de señal por miembro.
++        const val SIGNAL_WINDOW_MS = 5_000L
+     }
+ 
+     private val members = ConcurrentHashMap<String, RoomMemberNative>()
+@@ -83,6 +85,18 @@ class RoomEngine(
+     // limitar la frecuencia de eventos hacia Flutter (throttling).
+     private val lastLevelEmit = ConcurrentHashMap<String, Long>()
+ 
++    // ── Calidad de señal por miembro ────────────────
++    // Instantes de los ANNOUNCEs recibidos dentro de SIGNAL_WINDOW_MS.
++    private val announceHistory = ConcurrentHashMap<String, ArrayDeque<Long>>()
++    // Desde cuándo se observa a cada miembro (para no penalizar a quien
++    // acaba de entrar y aún no completó una ventana).
++    private val signalSince = ConcurrentHashMap<String, Long>()
++    // Último score calculado, para emitir a Flutter solo si cambia.
++    private val signalScores = ConcurrentHashMap<String, Int>()
++    // Intervalo con el que se emiten los ANNOUNCE. Hoy es fijo; si algún
++    // día el modo ahorro lo cambia, el cálculo se adapta solo.
++    @Volatile private var announceIntervalMs = ANNOUNCE_MS
++
+     private var myIp      = ""
+     private var myName    = ""
+     private var myAvatar  = ""
+@@ -214,6 +228,8 @@ class RoomEngine(
+             System.currentTimeMillis() + IGNORE_AFTER_LEAVE_MS
+ 
+         mixer.removeMember(fromIp)
++        announceHistory.remove(fromIp)
++        signalSince.remove(fromIp)
+         sound.playLeave()
+         EventBus.send("memberLeft", mapOf("name" to member.name, "ip" to member.ip))
+         notifyMembersChanged()
+@@ -255,6 +271,8 @@ class RoomEngine(
+             if (now < existing.ignoreAnnouncesUntil) return
+         }
+ 
++        recordAnnounce(ip)
++
+         val isNew      = existing == null
+         val wasOffline = existing?.isOnline == false
+ 
+@@ -423,6 +441,9 @@ class RoomEngine(
+                         }
+                     }
+                 }
++                // El score depende del tiempo transcurrido, así que se
++                // recalcula cada ciclo, pero solo se emite si cambió.
++                if (refreshSignalScores()) changed = true
+                 if (changed) notifyMembersChanged()
+                 checkReconnectionBanner()
+             }
+@@ -564,6 +585,56 @@ class RoomEngine(
+         return (rms / 8000.0).toFloat().coerceIn(0f, 1f)
+     }
+ 
++    // ── CALIDAD DE SEÑAL ───────────────────────────────
++    private fun recordAnnounce(ip: String) {
++        val now = System.currentTimeMillis()
++        signalSince.putIfAbsent(ip, now)
++        val dq = announceHistory.getOrPut(ip) { ArrayDeque() }
++        synchronized(dq) {
++            // Cada ciclo de un miembro llega duplicado (broadcast + unicast
++            // directo, ver sendAnnounceBroadcast). Colapsamos esa pareja para
++            // contar ciclos reales; si no, la tasa saturaría siempre en 100 %.
++            val last = dq.lastOrNull()
++            if (last == null || now - last >= announceIntervalMs / 2) {
++                dq.addLast(now)
++            }
++            while (dq.isNotEmpty() && now - dq.first() > SIGNAL_WINDOW_MS) {
++                dq.removeFirst()
++            }
++        }
++    }
++
++    private fun computeSignalQuality(member: RoomMemberNative): Int {
++        if (!member.isOnline) return 0
++        val now = System.currentTimeMillis()
++        val dq = announceHistory[member.ip]
++        val received = if (dq == null) 0 else synchronized(dq) {
++            while (dq.isNotEmpty() && now - dq.first() > SIGNAL_WINDOW_MS) {
++                dq.removeFirst()
++            }
++            dq.size
++        }
++        val observed = minOf(SIGNAL_WINDOW_MS, now - (signalSince[member.ip] ?: now))
++        return SignalScorer.score(
++            elapsedMs  = now - member.lastSeen,
++            received   = received,
++            observedMs = observed,
++            intervalMs = announceIntervalMs,
++            timeoutMs  = MEMBER_TIMEOUT_MS,
++        )
++    }
++
++    // Recalcula los scores; devuelve true si alguno cambió.
++    private fun refreshSignalScores(): Boolean {
++        var changed = false
++        for (m in members.values) {
++            // Hacia uno mismo no hay "señal" que medir.
++            val s = if (m.ip == myIp) 3 else computeSignalQuality(m)
++            if (signalScores.put(m.ip, s) != s) changed = true
++        }
++        return changed
++    }
++
+     private fun notifyMembersChanged() {
+         val list = members.values.map { m ->
+             mapOf<String, Any?>(
+@@ -574,6 +645,7 @@ class RoomEngine(
+                 "volume"        to m.volume.toDouble(),
+                 "speakingLevel" to m.speakingLevel.toDouble(),
+                 "isOnline"      to m.isOnline,
++                "signalQuality" to (signalScores[m.ip] ?: 3),
+             )
+         }
+         EventBus.send("membersChanged", list)
+@@ -594,5 +666,8 @@ class RoomEngine(
+         audio.stopCapture()
+         mixer.stop()
+         members.clear()
++        announceHistory.clear()
++        signalSince.clear()
++        signalScores.clear()
+     }
+ }
+\ No newline at end of file
+diff --git a/android/app/src/main/kotlin/com/example/intercom_app/SignalScorer.kt b/android/app/src/main/kotlin/com/example/intercom_app/SignalScorer.kt
+new file mode 100644
+index 0000000..b29832f
+--- /dev/null
++++ b/android/app/src/main/kotlin/com/example/intercom_app/SignalScorer.kt
+@@ -0,0 +1,48 @@
++package com.example.intercom_app
++
++/**
++ * Calidad de señal de un miembro, de 0 (sin señal) a 3 (buena).
++ *
++ * Función pura: no toca Android ni estado, para poder probarla con un
++ * test unitario sin dispositivos. Combina dos dimensiones y devuelve la
++ * peor de las dos (una señal solo es buena si es reciente Y constante):
++ *
++ *  • Latencia: tiempo desde el último paquete recibido, medido en
++ *    múltiplos del intervalo de ANNOUNCE (así sigue siendo válida si el
++ *    intervalo cambia, p. ej. en un futuro modo ahorro).
++ *  • Tasa de recepción: ANNOUNCEs recibidos vs. esperados en la ventana
++ *    observada. Los umbrales son generosos porque UDP pierde paquetes
++ *    ocasionalmente incluso con buena señal.
++ */
++object SignalScorer {
++
++    fun score(
++        elapsedMs: Long,   // ahora - último paquete (cualquier tipo) del miembro
++        received: Int,     // ANNOUNCEs distintos recibidos dentro de la ventana
++        observedMs: Long,  // cuánto lleva observándose al miembro (tope = ventana)
++        intervalMs: Long,  // intervalo con el que se emiten los ANNOUNCE
++        timeoutMs: Long,   // tiempo tras el cual el miembro pasa a offline
++    ): Int {
++        val interval = intervalMs.coerceAtLeast(1L)
++
++        val latencyScore = when {
++            elapsedMs < interval * 3 / 2 -> 3
++            elapsedMs < interval * 5 / 2 -> 2
++            elapsedMs < timeoutMs        -> 1
++            else                         -> 0
++        }
++
++        // Un miembro recién visto no ha tenido tiempo de "acumular" una
++        // ventana completa: esperamos solo lo que cabe en lo observado.
++        val expected = (observedMs / interval).toInt().coerceAtLeast(1)
++        val ratio = received.toFloat() / expected
++        val rateScore = when {
++            ratio >= 0.8f -> 3
++            ratio >= 0.5f -> 2
++            ratio >= 0.2f -> 1
++            else          -> 0
++        }
++
++        return minOf(latencyScore, rateScore)
++    }
++}
+diff --git a/android/app/src/test/kotlin/com/example/intercom_app/SignalScorerTest.kt b/android/app/src/test/kotlin/com/example/intercom_app/SignalScorerTest.kt
+new file mode 100644
+index 0000000..d644ee7
+--- /dev/null
++++ b/android/app/src/test/kotlin/com/example/intercom_app/SignalScorerTest.kt
+@@ -0,0 +1,48 @@
++package com.example.intercom_app
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class SignalScorerTest {
++
++    private fun score(elapsed: Long, received: Int, observed: Long = 5_000L,
++                      interval: Long = 1_000L, timeout: Long = 3_000L) =
++        SignalScorer.score(elapsed, received, observed, interval, timeout)
++
++    @Test fun senalPlenaSiTodoLlegaYEsReciente() =
++        assertEquals(3, score(elapsed = 200, received = 5))
++
++    @Test fun latenciaBajaLosUmbrales() {
++        assertEquals(3, score(elapsed = 1_499, received = 5))
++        assertEquals(2, score(elapsed = 1_500, received = 5))
++        assertEquals(2, score(elapsed = 2_499, received = 5))
++        assertEquals(1, score(elapsed = 2_500, received = 5))
++        assertEquals(1, score(elapsed = 2_999, received = 5))
++        assertEquals(0, score(elapsed = 3_000, received = 5))
++    }
++
++    @Test fun perdidaDePaquetesBajaElScore() {
++        assertEquals(3, score(elapsed = 200, received = 4)) // 0.8
++        assertEquals(2, score(elapsed = 200, received = 3)) // 0.6
++        assertEquals(1, score(elapsed = 200, received = 2)) // 0.4
++        assertEquals(0, score(elapsed = 200, received = 0))
++    }
++
++    @Test fun gananLosDosPeoresDeLasDimensiones() {
++        // Reciente pero con muchas pérdidas -> manda la tasa.
++        assertEquals(1, score(elapsed = 200, received = 2))
++        // Sin pérdidas pero el último paquete es viejo -> manda la latencia.
++        assertEquals(1, score(elapsed = 2_700, received = 5))
++    }
++
++    @Test fun miembroRecienVistoNoSePenaliza() {
++        assertEquals(3, score(elapsed = 100, received = 1, observed = 800))
++        assertEquals(3, score(elapsed = 100, received = 1, observed = 0))
++    }
++
++    @Test fun seAdaptaAUnIntervaloMayor() {
++        // ANNOUNCE cada 3 s: 3.5 s sin paquetes sigue siendo buena señal.
++        assertEquals(3, score(elapsed = 3_500, received = 1,
++            interval = 3_000, timeout = 9_000))
++    }
++}
+diff --git a/lib/models/room_state.dart b/lib/models/room_state.dart
+index 9603000..dfda67d 100644
+--- a/lib/models/room_state.dart
++++ b/lib/models/room_state.dart
+@@ -10,6 +10,8 @@ class RoomMember {
+   double speakingLevel;
+   String? avatarBase64;
+   bool isOnline;
++  // Calidad de señal 0-3 (0 = sin señal, 3 = buena), calculada en Kotlin.
++  int signalQuality;
+   DateTime lastSeen;
+ 
+   RoomMember({
+@@ -20,6 +22,7 @@ class RoomMember {
+     this.speakingLevel = 0.0,
+     this.avatarBase64,
+     this.isOnline = true,
++    this.signalQuality = 3,
+   }) : lastSeen = DateTime.now();
+ }
+ 
+diff --git a/lib/providers/room_provider.dart b/lib/providers/room_provider.dart
+index 8ce6167..d1de519 100644
+--- a/lib/providers/room_provider.dart
++++ b/lib/providers/room_provider.dart
+@@ -67,6 +67,7 @@ class RoomNotifier extends Notifier<RoomState> {
+           speakingLevel: (m['speakingLevel'] as num?)?.toDouble() ?? 0.0,
+           avatarBase64: m['avatarBase64'] as String?,
+           isOnline: m['isOnline'] as bool? ?? true,
++          signalQuality: (m['signalQuality'] as num?)?.toInt() ?? 3,
+         );
+       }
+       state = state.copyWith(members: members);
+diff --git a/lib/screens/group_screen.dart b/lib/screens/group_screen.dart
+index 2b6105a..fd6ef67 100644
+--- a/lib/screens/group_screen.dart
++++ b/lib/screens/group_screen.dart
+@@ -8,6 +8,7 @@ import 'package:intercom_app/providers/room_provider.dart';
+ import 'package:flutter/services.dart';
+ import 'package:intercom_app/models/room_info.dart';
+ import 'package:intercom_app/services/settings_service.dart';
++import 'package:intercom_app/widgets/signal_bars.dart';
+ 
+ const _cyan = Color(0xFF00E5FF);
+ const _bg = Color(0xFF0A1628);
+@@ -607,6 +608,19 @@ class _MemberCardState extends ConsumerState<_MemberCard> {
+                       ),
+                     ),
+             ),
++            Positioned(
++              top: 8,
++              left: 8,
++              child: Container(
++                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
++                decoration: BoxDecoration(
++                  color: _bg.withOpacity(0.7),
++                  borderRadius: BorderRadius.circular(6),
++                  border: Border.all(color: _border),
++                ),
++                child: SignalBars(quality: m.isOnline ? m.signalQuality : 0),
++              ),
++            ),
+             Positioned(
+               top: 8,
+               right: 8,
+diff --git a/lib/widgets/signal_bars.dart b/lib/widgets/signal_bars.dart
+new file mode 100644
+index 0000000..d2ae49a
+--- /dev/null
++++ b/lib/widgets/signal_bars.dart
+@@ -0,0 +1,48 @@
++import 'package:flutter/material.dart';
++
++const _inactive = Color(0xFF445566);
++
++/// Color del indicador según la calidad de señal (0 = sin señal … 3 = buena).
++Color signalColor(int quality) {
++  switch (quality) {
++    case 3:
++      return const Color(0xFF3DD68C); // verde
++    case 2:
++      return const Color(0xFFE5B800); // amarillo
++    case 1:
++      return const Color(0xFFE58A00); // naranja
++    default:
++      return const Color(0xFFCC4444); // rojo
++  }
++}
++
++/// Tres barras estilo wifi. [quality] va de 0 a 3 y se acota si viene fuera.
++class SignalBars extends StatelessWidget {
++  final int quality;
++  const SignalBars({super.key, required this.quality});
++
++  @override
++  Widget build(BuildContext context) {
++    final q = quality.clamp(0, 3);
++    const heights = [5.0, 8.0, 11.0];
++    return Semantics(
++      label: 'Calidad de señal $q de 3',
++      child: Row(
++        mainAxisSize: MainAxisSize.min,
++        crossAxisAlignment: CrossAxisAlignment.end,
++        children: List.generate(3, (i) {
++          final active = q > i;
++          return Container(
++            margin: const EdgeInsets.only(right: 1.5),
++            width: 3,
++            height: heights[i],
++            decoration: BoxDecoration(
++              color: active ? signalColor(q) : _inactive.withOpacity(0.35),
++              borderRadius: BorderRadius.circular(1),
++            ),
++          );
++        }),
++      ),
++    );
++  }
++}
+diff --git a/test/widget/signal_bars_test.dart b/test/widget/signal_bars_test.dart
+new file mode 100644
+index 0000000..d5364c0
+--- /dev/null
++++ b/test/widget/signal_bars_test.dart
+@@ -0,0 +1,50 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:intercom_app/widgets/signal_bars.dart';
++
++List<Color?> _barColors(WidgetTester tester) => tester
++    .widgetList<Container>(
++      find.descendant(
++        of: find.byType(SignalBars),
++        matching: find.byType(Container),
++      ),
++    )
++    .map((c) => (c.decoration as BoxDecoration).color)
++    .toList();
++
++Future<void> _pump(WidgetTester tester, int quality) => tester.pumpWidget(
++  MaterialApp(
++    home: Scaffold(body: SignalBars(quality: quality)),
++  ),
++);
++
++void main() {
++  group('SignalBars', () {
++    for (final q in [0, 1, 2, 3]) {
++      testWidgets('calidad $q pinta $q barras activas de 3', (tester) async {
++        await _pump(tester, q);
++        final colors = _barColors(tester);
++        expect(colors.length, 3);
++        expect(colors.where((c) => c == signalColor(q)).length, q);
++      });
++    }
++
++    testWidgets('acota valores fuera de rango', (tester) async {
++      await _pump(tester, 9);
++      expect(
++        _barColors(tester).where((c) => c == signalColor(3)).length,
++        3,
++      );
++      await _pump(tester, -4);
++      expect(
++        _barColors(tester).where((c) => c == signalColor(0)).length,
++        0,
++      );
++    });
++  });
++
++  test('cada nivel tiene un color distinto', () {
++    final colors = {for (final q in [0, 1, 2, 3]) signalColor(q)};
++    expect(colors.length, 4);
++  });
++}

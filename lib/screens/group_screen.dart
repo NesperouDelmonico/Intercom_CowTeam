@@ -8,6 +8,7 @@ import 'package:intercom_app/providers/room_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:intercom_app/models/room_info.dart';
 import 'package:intercom_app/services/settings_service.dart';
+import 'package:intercom_app/widgets/signal_bars.dart';
 
 const _cyan = Color(0xFF00E5FF);
 const _bg = Color(0xFF0A1628);
@@ -606,6 +607,19 @@ class _MemberCardState extends ConsumerState<_MemberCard> {
                         ),
                       ),
                     ),
+            ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+                decoration: BoxDecoration(
+                  color: _bg.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: _border),
+                ),
+                child: SignalBars(quality: m.isOnline ? m.signalQuality : 0),
+              ),
             ),
             Positioned(
               top: 8,
